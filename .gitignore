@@ -5,3 +5,4 @@ __pycache__/
 *_ranking.csv
 *_backtest.csv
 *_operacoes.csv
+*_comparacao.csv

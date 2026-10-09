@@ -9,6 +9,9 @@ Uso: python scanner_dividendos_b3.py --anos 8 --aporte 200 --top 5
 from __future__ import annotations
 
 import argparse
+import json
+import re
+import urllib.request
 import warnings
 from pathlib import Path
 import numpy as np
@@ -45,6 +48,13 @@ MAX_PESO_ATIVO = 0.25      # limite de peso por ativo (relaxado para 1/n se houv
 MAX_PESO_FII = 0.60        # limite agregado para FIIs
 MAX_PESO_ACOES = 0.80      # limite agregado para ações
 LIMITE_CLASSE = {"FII": MAX_PESO_FII, "ACAO": MAX_PESO_ACOES}
+
+# Benchmarks: os mesmos aportes, nas mesmas datas, aplicados em cada referência.
+# ETFs: o preço ajustado do Yahoo aproxima o retorno total do índice (já líquido da taxa do ETF).
+# O DIVO11 é um ETF recente: se o histórico não cobrir o período do backtest, é ignorado com aviso.
+BENCHMARKS_ETF = {"IBOV (BOVA11)": "BOVA11.SA", "IDIV (DIVO11)": "DIVO11.SA"}
+# CDI diário (% ao dia): série 12 do SGS do Banco Central.
+URL_CDI_BCB = "https://api.bcb.gov.br/dados/serie/bcdata.sgs.12/dados"
 
 
 def baixar_dados(tickers: list[str], inicio: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
@@ -283,12 +293,154 @@ def max_drawdown(curva: pd.Series) -> float:
     return float(dd.min() * 100)
 
 
+def xirr(fluxos: list[tuple[pd.Timestamp, float]]) -> float:
+    """Taxa interna de retorno anual de fluxos datados (base de 365 dias, como no Excel).
+
+    Aportes entram com sinal negativo e o valor final com sinal positivo. Devolve NaN se não
+    houver fluxo positivo e negativo ou se a taxa estiver fora de -99,99% a 1.000% ao ano.
+    """
+    datas = pd.to_datetime([d for d, _ in fluxos])
+    valores = np.array([v for _, v in fluxos], dtype=float)
+    if not ((valores > 0).any() and (valores < 0).any()):
+        return float("nan")
+    anos = np.array((datas - datas.min()).days, dtype=float) / 365.0
+
+    def vpl(taxa: float) -> float:
+        return float(np.sum(valores / (1.0 + taxa) ** anos))
+
+    # Com aportes antes do valor final, o VPL é decrescente na taxa: bisseção é suficiente.
+    baixo, alto = -0.9999, 10.0
+    v_baixo, v_alto = vpl(baixo), vpl(alto)
+    if v_baixo * v_alto > 0:
+        return float("nan")
+    for _ in range(200):
+        meio = (baixo + alto) / 2
+        v_meio = vpl(meio)
+        if v_baixo * v_meio <= 0:
+            alto, v_alto = meio, v_meio
+        else:
+            baixo, v_baixo = meio, v_meio
+        if alto - baixo < 1e-12:
+            break
+    return (baixo + alto) / 2
+
+
+def baixar_cdi(inicio: pd.Timestamp, fim: pd.Timestamp,
+               abrir=urllib.request.urlopen) -> pd.Series:
+    """Índice acumulado do CDI (dia útil a dia útil) pela série 12 do SGS/Banco Central.
+
+    A consulta é dividida em janelas de até 5 anos, porque a API limita o intervalo das
+    séries diárias. `abrir` existe para os testes poderem simular a resposta.
+    """
+    registros: list[dict] = []
+    ini = pd.Timestamp(inicio)
+    while ini <= fim:
+        fim_janela = min(ini + pd.DateOffset(years=5) - pd.Timedelta(days=1), fim)
+        url = f"{URL_CDI_BCB}?formato=json&dataInicial={ini:%d/%m/%Y}&dataFinal={fim_janela:%d/%m/%Y}"
+        pedido = urllib.request.Request(url, headers={"User-Agent": "scanner-dividendos-b3"})
+        with abrir(pedido, timeout=30) as resposta:
+            dados = json.loads(resposta.read().decode("utf-8"))
+        if not isinstance(dados, list):
+            raise RuntimeError(f"Resposta inesperada do Banco Central: {str(dados)[:120]}")
+        registros.extend(dados)
+        ini = fim_janela + pd.Timedelta(days=1)
+    if not registros:
+        raise RuntimeError("O Banco Central não retornou dados do CDI para o período.")
+    tabela = pd.DataFrame(registros)
+    taxa = pd.Series(tabela["valor"].astype(float).to_numpy(),
+                     index=pd.to_datetime(tabela["data"], format="%d/%m/%Y"))
+    taxa = taxa[~taxa.index.duplicated()].sort_index()
+    return (1 + taxa / 100).cumprod()
+
+
+def simular_aportes(indice: pd.Series, aportes: pd.Series, custo: float = 0.0) -> pd.Series | None:
+    """Patrimônio de quem aplicou os mesmos aportes, nas mesmas datas, em um índice de retorno total.
+
+    Devolve None se o índice não cobrir todas as datas dos aportes.
+    """
+    nivel = indice.reindex(aportes.index)
+    if nivel.isna().any() or (nivel <= 0).any():
+        return None
+    return (aportes / (1 + custo) / nivel).cumsum() * nivel
+
+
+def resumir(curva: pd.DataFrame, series: dict[str, pd.Series],
+            datas_fluxo: pd.DatetimeIndex) -> pd.DataFrame:
+    """Valor final, ganho e XIRR da estratégia e de cada benchmark, com os mesmos fluxos de caixa."""
+    aportes = curva["aporte_mes"].to_numpy(dtype=float)
+
+    def linha(nome: str, valores: pd.Series) -> dict:
+        final = float(valores.iloc[-1])
+        fluxos = list(zip(datas_fluxo, -aportes)) + [(datas_fluxo[-1], final)]
+        return {"nome": nome, "total_aportado": float(aportes.sum()), "valor_final": final,
+                "ganho": final - float(aportes.sum()), "xirr_aa_pct": xirr(fluxos) * 100}
+
+    resumo = pd.DataFrame([linha("Estratégia", curva["valor_carteira"])]
+                          + [linha(nome, s) for nome, s in series.items()])
+    # Positivo = a estratégia rendeu mais que a referência. Vazio na própria linha da estratégia.
+    resumo["diferenca_xirr_pp"] = resumo.loc[0, "xirr_aa_pct"] - resumo["xirr_aa_pct"]
+    resumo.loc[0, "diferenca_xirr_pp"] = np.nan
+    return resumo
+
+
+def avaliar_benchmarks(curva: pd.DataFrame, inicio: str,
+                       usar_benchmarks: bool = True) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Acrescenta à curva o patrimônio de cada benchmark e devolve também o resumo com XIRR.
+
+    Falhas de download (CDI ou ETFs) geram aviso e o benchmark é ignorado; o XIRR da
+    estratégia sai sempre.
+    """
+    datas = pd.DatetimeIndex(pd.to_datetime(curva["data"]))
+    # O último ponto pode ser um mês ainda em andamento (rótulo = fim do mês): nos fluxos
+    # datados, usa-se hoje no lugar de uma data futura.
+    hoje = pd.Timestamp.today().normalize()
+    datas_fluxo = datas if datas[-1] <= hoje else datas[:-1].append(pd.DatetimeIndex([hoje]))
+    aportes = pd.Series(curva["aporte_mes"].to_numpy(dtype=float), index=datas)
+    series: dict[str, pd.Series] = {}
+
+    if usar_benchmarks:
+        try:
+            cdi = baixar_cdi(datas_fluxo[0] - pd.Timedelta(days=10), datas_fluxo[-1])
+            nivel = pd.Series([cdi.asof(d) for d in datas_fluxo], index=datas)
+            valores = simular_aportes(nivel, aportes)   # CDI: sem custo de negociação
+            if valores is None:
+                print("[AVISO] CDI: dados não cobrem todo o período do backtest; ignorado.")
+            else:
+                series["CDI"] = valores
+        except Exception as exc:
+            print(f"[AVISO] Não foi possível baixar o CDI do Banco Central ({exc}); ignorado.")
+        try:
+            _, adj_etf, _ = baixar_dados(list(BENCHMARKS_ETF.values()), inicio)
+        except Exception as exc:
+            print(f"[AVISO] Não foi possível baixar os ETFs de referência ({exc}); ignorados.")
+        else:
+            for nome, ticker in BENCHMARKS_ETF.items():
+                if ticker not in adj_etf.columns:
+                    continue
+                nivel = adj_etf[ticker]
+                valores = simular_aportes(nivel, aportes, CUSTO_TRADE)   # ETF: mesmo custo da estratégia
+                if valores is None:
+                    primeiro = nivel.first_valid_index()
+                    desde = f" (dados desde {primeiro:%Y-%m})" if primeiro is not None else ""
+                    print(f"[AVISO] {nome}: histórico não cobre todo o período do backtest{desde}; ignorado.")
+                else:
+                    series[nome] = valores
+
+    curva = curva.copy()
+    for nome, valores in series.items():
+        sufixo = re.sub(r"\W+", "_", nome.lower()).strip("_")   # "IBOV (BOVA11)" -> "ibov_bova11"
+        curva[f"valor_{sufixo}"] = valores.to_numpy()
+    return curva, resumir(curva, series, datas_fluxo)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Scanner conservador de dividendos B3 + backtest.")
     parser.add_argument("--anos", type=int, default=8, help="Anos de histórico para baixar (padrão: 8).")
     parser.add_argument("--aporte", type=float, default=APORTE_PADRAO, help="Aporte mensal em reais (padrão: 200).")
     parser.add_argument("--top", type=int, default=TOP_PADRAO, help="Máximo de ativos por mês (padrão: 5).")
     parser.add_argument("--saida", default="resultado_dividendos", help="Prefixo dos arquivos de saída.")
+    parser.add_argument("--sem-benchmark", action="store_true",
+                        help="Não baixa CDI nem ETFs de referência; calcula só o XIRR da estratégia.")
     args = parser.parse_args()
     if args.anos < 4 or args.aporte <= 0 or args.top < 1:
         raise SystemExit("Use --anos >= 4, --aporte > 0 e --top >= 1.")
@@ -305,8 +457,12 @@ def main() -> None:
     ranking.to_csv(f"{args.saida}_ranking.csv", index=False, encoding="utf-8-sig")
 
     curva, operacoes = backtest(raw, adj, div, args.aporte, args.top)
+    resumo = pd.DataFrame()
+    if not curva.empty:
+        curva, resumo = avaliar_benchmarks(curva, inicio, usar_benchmarks=not args.sem_benchmark)
     curva.to_csv(f"{args.saida}_backtest.csv", index=False, encoding="utf-8-sig")
     operacoes.to_csv(f"{args.saida}_operacoes.csv", index=False, encoding="utf-8-sig")
+    resumo.to_csv(f"{args.saida}_comparacao.csv", index=False, encoding="utf-8-sig")
 
     if not curva.empty:
         final = float(curva["valor_carteira"].iloc[-1])
@@ -318,7 +474,17 @@ def main() -> None:
         print(f"Diferença vs. aportes: R$ {final-aportado:,.2f}")
         print(f"Retorno vs. soma dos aportes: {(final/aportado-1)*100:.2f}%")
         print(f"Maior drawdown da curva de patrimônio: {max_drawdown(curva['valor_carteira']):.2f}%")
-        print("Observação: retorno vs. aportes não é TIR/XIRR e não é retorno anualizado.")
+        print(f"XIRR da estratégia: {resumo.loc[0, 'xirr_aa_pct']:.2f}% a.a. (base de 365 dias, sem IR)")
+        print("Observação: retorno vs. soma dos aportes não é anualizado; compare estratégias pelo XIRR.")
+        print("\n=== COMPARAÇÃO COM BENCHMARKS (mesmos aportes, mesmas datas, sem IR) ===")
+        tabela = resumo.copy()   # texto formatado; to_string não aplica formatadores a valores ausentes
+        for coluna in ("total_aportado", "valor_final", "ganho"):
+            tabela[coluna] = tabela[coluna].map(lambda x: f"R$ {x:,.2f}")
+        tabela["xirr_aa_pct"] = tabela["xirr_aa_pct"].map(lambda x: "n/d" if pd.isna(x) else f"{x:.2f}%")
+        tabela["diferenca_xirr_pp"] = tabela["diferenca_xirr_pp"].map(
+            lambda x: "" if pd.isna(x) else f"{x:+.2f} p.p.")
+        print(tabela.to_string(index=False))
+        print("diferenca_xirr_pp: XIRR da estratégia menos o do benchmark (positivo = estratégia rendeu mais).")
     print("\n=== RANKING ATUAL (sinal do último mês fechado) ===")
     if ranking.empty:
         print("Nenhum ativo passou nos filtros. Não relaxe os filtros sem revisar a qualidade dos dados.")
@@ -329,7 +495,8 @@ def main() -> None:
             "retorno_preco_12m_pct": lambda x: f"{x:.2f}%",
             "score": lambda x: f"{x:.3f}",
         }))
-    print(f"\nArquivos gerados: {args.saida}_ranking.csv, {args.saida}_backtest.csv, {args.saida}_operacoes.csv")
+    print(f"\nArquivos gerados: {args.saida}_ranking.csv, {args.saida}_backtest.csv, "
+          f"{args.saida}_operacoes.csv, {args.saida}_comparacao.csv")
     print("O script não envia ordens. Revise os dados e os fundamentos antes de investir.")
 
 

@@ -20,6 +20,7 @@ Se o PowerShell bloquear a ativação do ambiente virtual, use `.\.venv\Scripts\
 ```powershell
 python scanner_dividendos_b3.py --anos 8 --aporte 200 --top 5
 python scanner_dividendos_b3.py --anos 10 --aporte 200 --top 5 --saida minha_carteira
+python scanner_dividendos_b3.py --sem-benchmark    # não baixa CDI nem ETFs de referência
 ```
 
 O período simulado é menor que o baixado, porque os filtros exigem 36 meses de histórico. A lista de ativos (`ACOES` e `FIIS`) e os parâmetros ficam no início do arquivo.
@@ -29,8 +30,23 @@ Arquivos gerados (prefixo `resultado_dividendos`, ou o valor de `--saida`):
 | Arquivo | Conteúdo |
 |---|---|
 | `*_ranking.csv` | Ativos aprovados no último mês fechado, com yield de 12 meses, períodos com proventos, retorno de preço em 12 meses e pontuação |
-| `*_backtest.csv` | Patrimônio mensal, total aportado, caixa, ganho/perda, ativos mantidos, quantidade de elegíveis e os selecionados |
+| `*_backtest.csv` | Patrimônio mensal, total aportado, caixa, ganho/perda, ativos mantidos, quantidade de elegíveis e os selecionados, mais uma coluna `valor_*` por benchmark |
 | `*_operacoes.csv` | Compras dos aportes e vendas por saída dos filtros (coluna `observacao` marca vendas feitas pelo último preço conhecido) |
+| `*_comparacao.csv` | Valor final, ganho e XIRR da estratégia e de cada benchmark, e a diferença de XIRR em pontos percentuais |
+
+## XIRR e benchmarks
+
+O **XIRR** é a taxa de retorno anual dos fluxos de caixa datados: cada aporte mensal sai com sinal negativo e o patrimônio final entra com sinal positivo (base de 365 dias, a mesma do Excel). Diferente do "retorno vs. soma dos aportes", ele leva em conta *quando* cada real foi investido, e por isso é a medida para comparar com benchmarks. Se o último mês ainda não terminou, o patrimônio final é datado de hoje, e não do fim do mês.
+
+A comparação coloca **os mesmos aportes, nas mesmas datas**, em cada referência:
+
+| Benchmark | Fonte | Observação |
+|---|---|---|
+| CDI | Série diária 12 do Banco Central (SGS) | Sem custo de negociação |
+| IBOV (BOVA11) | Yahoo Finance, preço ajustado do ETF | Aproxima o retorno total do Ibovespa, já líquido da taxa do ETF; aplica o mesmo custo de negociação da estratégia |
+| IDIV (DIVO11) | Yahoo Finance, preço ajustado do ETF | Índice de dividendos; é um ETF recente, com histórico curto, e é ignorado (com aviso) se não cobrir todo o período do backtest |
+
+Um benchmark que não puder ser baixado também gera apenas um aviso, e o resto segue normalmente. A lista de ETFs fica em `BENCHMARKS_ETF`, no início do arquivo.
 
 ## Filtros e pontuação
 
@@ -60,8 +76,9 @@ Não há regra de "comprar porque o preço caiu": uma queda pode ser oportunidad
 2. **Preços ajustados:** as quantidades são sintéticas, não lotes negociáveis.
 3. **Fundamentos:** os filtros não usam balanços disponíveis em cada data, então o ranking histórico pode não refletir o que se sabia na época.
 4. **Custos e tributação:** a taxa é uma estimativa. Impostos, spreads, liquidez e lotes fracionários não estão modelados.
-5. **Métricas:** não há XIRR nem comparação com benchmark. O drawdown é calculado sobre o patrimônio, que cresce com os aportes.
-6. **Dados do Yahoo Finance:** podem ter falhas e lacunas, principalmente em proventos de FIIs. Para FIIs, a CVM publica informes mensais estruturados.
+5. **Métricas:** o drawdown é calculado sobre o patrimônio, que cresce com os aportes, então subestima a queda real.
+6. **Benchmarks:** todos sem imposto de renda (CDI bruto), e não há referência de FIIs (IFIX). O resultado depende muito do período: um backtest curto compara a estratégia com um benchmark em um único ciclo de mercado.
+7. **Dados do Yahoo Finance:** podem ter falhas e lacunas, principalmente em proventos de FIIs. Para FIIs, a CVM publica informes mensais estruturados.
 
 ## Testes
 
@@ -70,4 +87,4 @@ pip install pytest
 python -m pytest
 ```
 
-Os testes são offline (dados sintéticos) e cobrem a contagem de proventos, o corte de proventos, os limites de peso, a regra de venda e o tratamento de ativos sem cotação.
+Os testes são offline (dados sintéticos e respostas simuladas do Banco Central) e cobrem a contagem de proventos, o corte de proventos, os limites de peso, a regra de venda, o tratamento de ativos sem cotação, o XIRR e os benchmarks.
