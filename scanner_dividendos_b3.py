@@ -30,6 +30,7 @@ FIIS = [
     "TRXF11.SA", "BTLG11.SA", "XPML11.SA", "PVBI11.SA", "RECR11.SA",
 ]
 UNIVERSO = ACOES + FIIS
+CLASSE = {**{t: "ACAO" for t in ACOES}, **{t: "FII" for t in FIIS}}
 
 APORTE_PADRAO = 200.0
 TOP_PADRAO = 5
@@ -37,10 +38,13 @@ CUSTO_TRADE = 0.0015       # estimativa de 0,15% sobre o valor negociado; altere
 YIELD_MINIMO = 0.03        # 3% trailing 12 meses; filtro, não meta de retorno
 YIELD_MAXIMO = 0.18        # acima disso exige cautela: pode ser evento não recorrente ou queda forte
 MESES_HISTORICO = 36
-MIN_ANOS_COM_DIVIDENDO = 2
-MAX_PESO_ATIVO = 0.25      # limite de peso por ativo
+MIN_ANOS_COM_DIVIDENDO = 2  # de 3 períodos consecutivos de 12 meses, quantos precisam ter pago proventos
+MIN_RAZAO_PROVENTOS = 0.5   # proventos dos últimos 12m / 12m anteriores; abaixo disso = corte forte. 0 desativa
+# Limites aplicados nos aportes (não há venda para rebalancear). O que não puder ser alocado fica em caixa.
+MAX_PESO_ATIVO = 0.25      # limite de peso por ativo (relaxado para 1/n se houver poucos candidatos)
 MAX_PESO_FII = 0.60        # limite agregado para FIIs
 MAX_PESO_ACOES = 0.80      # limite agregado para ações
+LIMITE_CLASSE = {"FII": MAX_PESO_FII, "ACAO": MAX_PESO_ACOES}
 
 
 def baixar_dados(tickers: list[str], inicio: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
@@ -77,25 +81,24 @@ def baixar_dados(tickers: list[str], inicio: str) -> tuple[pd.DataFrame, pd.Data
 
 def metricas_historicas(raw: pd.DataFrame, div: pd.DataFrame) -> dict[str, pd.DataFrame]:
     """Calcula sinais mensais; o backtest sempre usa o sinal do mês anterior."""
-    div = div.reindex(raw.index).fillna(0.0)
     raw = raw.sort_index()
+    div = div.reindex(raw.index).fillna(0.0)
     trailing_div = div.rolling(12, min_periods=12).sum()
     dy = trailing_div / raw.replace(0, np.nan)
-    anual = div.resample("YE").sum()
-    # Para cada mês, contar quantos dos três anos anteriores tiveram proventos.
-    anos_com_div = pd.DataFrame(index=raw.index, columns=raw.columns, dtype=float)
-    for ticker in raw.columns:
-        serie = div[ticker]
-        for dt in raw.index:
-            janela = serie.loc[(serie.index < dt) & (serie.index >= dt - pd.DateOffset(months=36))]
-            anos = janela.groupby(janela.index.year).sum()
-            anos_com_div.loc[dt, ticker] = int((anos > 0).sum())
+    # Três períodos consecutivos de 12 meses terminando no mês do sinal (mesma janela do dy).
+    # Usar anos-calendário daria até 4 anos em uma janela de 36 meses.
+    pagou = (trailing_div > 0).astype(float).where(trailing_div.notna())
+    anos_com_div = pagou + pagou.shift(12) + pagou.shift(24)   # 0 a 3; NaN sem 36 meses de dados
+    # Proventos dos últimos 12m frente aos 12m anteriores; NaN quando o período anterior não pagou.
+    anterior = trailing_div.shift(12)
+    razao_proventos = trailing_div / anterior.where(anterior > 0)
     # Liquidez é aproximada por existência de preço mensal, não por volume negociado.
     retorno_12m = raw.pct_change(12)
-    return {"dy": dy, "anos_div": anos_com_div, "retorno_12m": retorno_12m}
+    return {"dy": dy, "anos_div": anos_com_div, "retorno_12m": retorno_12m,
+            "razao_proventos": razao_proventos}
 
 
-def selecionar(raw: pd.DataFrame, adj: pd.DataFrame, div: pd.DataFrame,
+def selecionar(raw: pd.DataFrame, adj: pd.DataFrame,
                sinais: dict[str, pd.DataFrame], data_sinal: pd.Timestamp,
                top_n: int) -> pd.DataFrame:
     """Ranking conservador com dados disponíveis até data_sinal."""
@@ -114,6 +117,9 @@ def selecionar(raw: pd.DataFrame, adj: pd.DataFrame, div: pd.DataFrame,
         if not (YIELD_MINIMO <= dy <= YIELD_MAXIMO):
             continue
         if anos < MIN_ANOS_COM_DIVIDENDO:
+            continue
+        razao = sinais["razao_proventos"].at[data_sinal, t]
+        if MIN_RAZAO_PROVENTOS and pd.notna(razao) and razao < MIN_RAZAO_PROVENTOS:
             continue
         # Penaliza tendência negativa de longo prazo; não usa qualquer dado posterior à data do sinal.
         ret12 = sinais["retorno_12m"].at[data_sinal, t]
@@ -136,6 +142,54 @@ def selecionar(raw: pd.DataFrame, adj: pd.DataFrame, div: pd.DataFrame,
     return pd.DataFrame(rows).sort_values("score", ascending=False).head(top_n).reset_index(drop=True)
 
 
+def alocar_aporte(caixa: float, candidatos: list[str],
+                  valores_atuais: dict[str, float]) -> dict[str, float]:
+    """Divide o caixa entre os candidatos respeitando os limites de peso.
+
+    Parte de uma divisão igual e redistribui o que exceder os limites aos demais.
+    Os pesos são medidos sobre o patrimônio após o aporte (posições atuais + caixa).
+    Não há venda para rebalancear: um ativo que já passou do limite só deixa de receber
+    aportes. O que não couber nos limites volta como sobra e fica em caixa.
+    Relaxamentos para não deixar caixa parado sem necessidade: o limite por ativo vira
+    1/n com menos de 1/MAX_PESO_ATIVO candidatos, e o limite de uma classe só vale se
+    houver candidatos de outra classe para receber o excedente.
+    """
+    if not candidatos or caixa <= 0:
+        return {}
+    eps = 1e-9
+    total = sum(valores_atuais.values()) + caixa
+    teto_ativo = max(MAX_PESO_ATIVO, 1 / len(candidatos)) * total
+    classes = {CLASSE.get(t, "ACAO") for t in candidatos}
+    teto_classe = {c: LIMITE_CLASSE[c] * total for c in classes} if len(classes) > 1 else {}
+    atual_classe = {c: sum(v for t, v in valores_atuais.items() if CLASSE.get(t, "ACAO") == c)
+                    for c in teto_classe}
+
+    alocado = {t: 0.0 for t in candidatos}
+    abertos = list(candidatos)
+    restante = caixa
+    while restante > eps and abertos:
+        parcela = restante / len(abertos)
+        pedido = {t: min(parcela, teto_ativo - valores_atuais.get(t, 0.0) - alocado[t])
+                  for t in abertos}
+        pedido = {t: max(v, 0.0) for t, v in pedido.items()}
+        for c, teto in teto_classe.items():
+            membros = [t for t in abertos if CLASSE.get(t, "ACAO") == c]
+            soma = sum(pedido[t] for t in membros)
+            livre = max(teto - atual_classe[c] - sum(alocado[t] for t in candidatos
+                                                      if CLASSE.get(t, "ACAO") == c), 0.0)
+            if soma > livre:
+                for t in membros:
+                    pedido[t] *= livre / soma
+        gasto = sum(pedido.values())
+        if gasto <= eps:
+            break
+        for t, v in pedido.items():
+            alocado[t] += v
+        restante -= gasto
+        abertos = [t for t in abertos if pedido[t] >= parcela - eps]
+    return {t: v for t, v in alocado.items() if v > eps}
+
+
 def backtest(raw: pd.DataFrame, adj: pd.DataFrame, div: pd.DataFrame,
              aporte: float, top_n: int) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Backtest mensal sem look-ahead, com caixa e custo estimado nas negociações.
@@ -143,6 +197,10 @@ def backtest(raw: pd.DataFrame, adj: pd.DataFrame, div: pd.DataFrame,
     O preço ajustado é usado como índice de retorno total (proventos reinvestidos
     matematicamente). As unidades são sintéticas; não equivalem à quantidade real
     de ações/cotas negociáveis, especialmente para FIIs.
+
+    Regras: só os top_n do ranking recebem aportes (respeitando os limites de peso, ver
+    alocar_aporte); só se vende um ativo que deixou de passar nos filtros; ativo sem cotação
+    no mês é avaliado/liquidado pelo último preço conhecido.
     """
     sinais = metricas_historicas(raw, div)
     datas = adj.index.intersection(raw.index).sort_values()
@@ -153,45 +211,56 @@ def backtest(raw: pd.DataFrame, adj: pd.DataFrame, div: pd.DataFrame,
     total_aportado = 0.0
     registros, operacoes = [], []
 
+    # Último preço conhecido: avalia e liquida ativos sem cotação em determinado mês.
+    precos_ref = adj.ffill()
+
     for i in range(MESES_HISTORICO + 1, len(datas)):
         dt = datas[i]
         sinal_dt = datas[i - 1]  # decisão baseada apenas no último mês fechado
-        selecionados = selecionar(raw, adj, div, sinais, sinal_dt, top_n)
-        candidatos = selecionados["ticker"].tolist()
+        # Ranking completo dos ativos que passam nos filtros; só os top_n recebem aporte.
+        elegiveis = selecionar(raw, adj, sinais, sinal_dt, len(raw.columns))["ticker"].tolist()
+        candidatos = elegiveis[:top_n]
         precos_hoje = adj.loc[dt]
+        ref_hoje = precos_ref.loc[dt]
 
-        # Liquida posições que deixaram de passar no filtro; desconta custo estimado.
+        # Liquida só as posições que deixaram de passar nos filtros. Quem continua elegível
+        # mas saiu do top_n é mantido (apenas deixa de receber aportes). Desconta custo estimado.
         for t in list(unidades):
-            if t not in candidatos:
-                p = precos_hoje.get(t, np.nan)
-                if pd.notna(p) and p > 0:
-                    bruto = unidades[t] * float(p)
-                    liquido = bruto * (1 - CUSTO_TRADE)
-                    caixa += liquido
-                    operacoes.append({"data": dt.date().isoformat(), "ticker": t,
-                                      "tipo": "VENDA_FILTRO", "valor_estimado": bruto,
-                                      "custo_estimado": bruto - liquido})
-                unidades.pop(t, None)
+            if t in elegiveis:
+                continue
+            p = ref_hoje.get(t, np.nan)
+            if pd.isna(p) or p <= 0:
+                continue  # sem nenhum preço de referência: mantém a posição em vez de descartá-la
+            sem_cotacao = pd.isna(precos_hoje.get(t, np.nan))
+            bruto = unidades.pop(t) * float(p)
+            liquido = bruto * (1 - CUSTO_TRADE)
+            caixa += liquido
+            operacoes.append({"data": dt.date().isoformat(), "ticker": t,
+                              "tipo": "VENDA_FILTRO", "valor_estimado": bruto,
+                              "custo_estimado": bruto - liquido,
+                              "observacao": "sem cotação no mês; usado o último preço disponível"
+                              if sem_cotacao else ""})
 
-        # O aporte entra mensalmente; caixa de vendas também é reinvestido.
+        # O aporte entra mensalmente; caixa de vendas também é reinvestido, dentro dos limites de peso.
         caixa += aporte
         total_aportado += aporte
         validos = [t for t in candidatos if pd.notna(precos_hoje.get(t, np.nan))
                    and float(precos_hoje.get(t, 0) or 0) > 0]
-        if validos and caixa > 0:
-            verba_por_ativo = caixa / len(validos)
-            for t in validos:
-                p = float(precos_hoje[t])
-                # O valor alocado inclui o custo de compra.
-                q = verba_por_ativo / (p * (1 + CUSTO_TRADE))
-                unidades[t] = unidades.get(t, 0.0) + q
-                operacoes.append({"data": dt.date().isoformat(), "ticker": t,
-                                  "tipo": "COMPRA_APORTE", "valor_estimado": verba_por_ativo,
-                                  "custo_estimado": verba_por_ativo - q * p})
-            caixa = 0.0
+        valores_atuais = {t: q * float(ref_hoje[t]) for t, q in unidades.items()
+                          if pd.notna(ref_hoje.get(t, np.nan))}
+        for t, verba in alocar_aporte(caixa, validos, valores_atuais).items():
+            p = float(precos_hoje[t])
+            # O valor alocado inclui o custo de compra.
+            q = verba / (p * (1 + CUSTO_TRADE))
+            unidades[t] = unidades.get(t, 0.0) + q
+            caixa -= verba
+            operacoes.append({"data": dt.date().isoformat(), "ticker": t,
+                              "tipo": "COMPRA_APORTE", "valor_estimado": verba,
+                              "custo_estimado": verba - q * p, "observacao": ""})
+        caixa = caixa if caixa > 1e-9 else 0.0  # descarta resíduo de ponto flutuante
 
-        valor_posicoes = sum(q * float(precos_hoje[t]) for t, q in unidades.items()
-                             if t in precos_hoje and pd.notna(precos_hoje[t]))
+        valor_posicoes = sum(q * float(ref_hoje[t]) for t, q in unidades.items()
+                             if pd.notna(ref_hoje.get(t, np.nan)))
         valor_fim = valor_posicoes + caixa
         retorno_total = (valor_fim / total_aportado - 1) * 100 if total_aportado else 0.0
         registros.append({
@@ -201,6 +270,7 @@ def backtest(raw: pd.DataFrame, adj: pd.DataFrame, div: pd.DataFrame,
             "ganho_perda_vs_aportes": valor_fim - total_aportado,
             "retorno_vs_aportes_pct": retorno_total,
             "ativos_na_carteira": len(unidades),
+            "qtd_elegiveis_com_sinal_anterior": len(elegiveis),
             "selecionados_com_sinal_anterior": ",".join(candidatos),
         })
     return pd.DataFrame(registros), pd.DataFrame(operacoes)
@@ -231,7 +301,7 @@ def main() -> None:
     data_atual = datas[-1]
     # Scanner atual: ranking com o último mês fechado, não com dado parcial do mês corrente.
     sinal_atual = datas[-2] if len(datas) > 1 else data_atual
-    ranking = selecionar(raw, adj, div, sinais, sinal_atual, max(args.top * 3, 10))
+    ranking = selecionar(raw, adj, sinais, sinal_atual, max(args.top * 3, 10))
     ranking.to_csv(f"{args.saida}_ranking.csv", index=False, encoding="utf-8-sig")
 
     curva, operacoes = backtest(raw, adj, div, args.aporte, args.top)

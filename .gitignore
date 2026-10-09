@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+.pytest_cache/
+# Relatórios gerados pelo scanner (prefixo padrão e prefixos personalizados via --saida)
+*_ranking.csv
+*_backtest.csv
+*_operacoes.csv
