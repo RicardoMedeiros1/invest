@@ -194,12 +194,13 @@ def test_main_gera_os_csv_com_benchmarks(monkeypatch, tmp_path, capsys):
     assert (tmp_path / "r_ranking.csv").exists()
     assert len(curva) > 12 and curva.total_aportado.iloc[-1] == 200 * len(curva)
     assert {"COMPRA_APORTE"} <= set(ops.tipo) and "observacao" in ops.columns
-    assert comparacao.nome.tolist() == ["Estratégia", "CDI", "IBOV (BOVA11)", "IDIV (DIVO11)"]
-    assert comparacao.xirr_aa_pct.notna().all()
-    assert {"valor_cdi", "valor_ibov_bova11", "valor_idiv_divo11"} <= set(curva.columns)
+    assert comparacao.nome.tolist() == ["Estratégia", "CDI", "IBOV (BOVA11)", "IDIV (DIVO11)", "IFIX (XFIX11)"]
+    assert comparacao.xirr_aa_pct.notna().all() and (comparacao.max_drawdown_pct <= 0).all()
+    assert {"valor_cdi", "valor_ibov_bova11", "valor_idiv_divo11", "valor_ifix_xfix11"} <= set(curva.columns)
     assert comparacao.total_aportado.eq(curva.total_aportado.iloc[-1]).all()
     saida = capsys.readouterr().out
     assert "RESULTADO DO BACKTEST" in saida and "XIRR da estratégia" in saida and "COMPARAÇÃO COM BENCHMARKS" in saida
+    assert "Maior drawdown (índice de retorno" in saida
 
 
 def test_main_sem_benchmark_nao_baixa_nada_alem_do_universo(monkeypatch, tmp_path):
@@ -293,10 +294,10 @@ def test_resumo_da_estrategia_igual_ao_benchmark_tem_diferenca_zero(monkeypatch)
     curva, indice = curva_sintetica()
     monkeypatch.setattr(sc, "baixar_cdi", lambda ini, fim: cdi_diario(ini, fim))
     monkeypatch.setattr(sc, "CUSTO_TRADE", 0.0)
-    ret = pd.DataFrame({"BOVA11.SA": indice, "DIVO11.SA": indice})
+    ret = pd.DataFrame({t: indice for t in sc.BENCHMARKS_ETF.values()})
     monkeypatch.setattr(sc, "baixar_dados", lambda tickers, inicio: (ret, ret, ret))
     _, resumo = sc.avaliar_benchmarks(curva, "2022-01-01")
-    assert resumo.nome.tolist() == ["Estratégia", "CDI", "IBOV (BOVA11)", "IDIV (DIVO11)"]
+    assert resumo.nome.tolist() == ["Estratégia", "CDI", "IBOV (BOVA11)", "IDIV (DIVO11)", "IFIX (XFIX11)"]
     assert resumo.xirr_aa_pct.iloc[0] == pytest.approx(12.68, abs=0.2)     # (1,01^12 - 1)
     assert resumo.xirr_aa_pct.iloc[2] == pytest.approx(resumo.xirr_aa_pct.iloc[0], abs=1e-6)
     assert resumo.diferenca_xirr_pp.iloc[2] == pytest.approx(0.0, abs=1e-6)
@@ -307,7 +308,7 @@ def test_resumo_da_estrategia_igual_ao_benchmark_tem_diferenca_zero(monkeypatch)
 def test_diferenca_de_xirr_e_positiva_quando_a_estrategia_rende_mais(monkeypatch):
     curva, _ = curva_sintetica(mensal=0.02)
     _, referencia = curva_sintetica(mensal=0.01)
-    ret = pd.DataFrame({"BOVA11.SA": referencia, "DIVO11.SA": referencia})
+    ret = pd.DataFrame({t: referencia for t in sc.BENCHMARKS_ETF.values()})
     monkeypatch.setattr(sc, "baixar_dados", lambda tickers, inicio: (ret, ret, ret))
     monkeypatch.setattr(sc, "baixar_cdi", lambda ini, fim: cdi_diario(ini, fim))
     _, resumo = sc.avaliar_benchmarks(curva, "2022-01-01")
@@ -317,11 +318,69 @@ def test_diferenca_de_xirr_e_positiva_quando_a_estrategia_rende_mais(monkeypatch
     assert ibov.diferenca_xirr_pp > 10
 
 
+# ---------- drawdown sobre o índice de retorno ----------
+
+def patrimonio_com_retornos(retornos, aporte=200.0):
+    """Patrimônio de quem aporta no fim de cada mês e tem o retorno dado no mês."""
+    valores, v = [], 0.0
+    for r in retornos:
+        v = v * (1 + r) + aporte
+        valores.append(v)
+    return pd.Series(valores), pd.Series(aporte, index=range(len(retornos)))
+
+
+def test_drawdown_do_indice_de_retorno_nao_e_atenuado_pelos_aportes():
+    valores, aportes = patrimonio_com_retornos([0.0] * 60 + [-0.30] + [0.0] * 5)
+    assert sc.max_drawdown(sc.indice_retorno(valores, aportes)) == pytest.approx(-30.0)
+    assert sc.max_drawdown(valores) > -29.0         # a métrica antiga subestimava a queda
+
+
+def test_aportes_sozinhos_nao_geram_retorno_nem_drawdown():
+    valores, aportes = patrimonio_com_retornos([0.0] * 24)
+    indice = sc.indice_retorno(valores, aportes)
+    assert (indice == 1.0).all() and sc.max_drawdown(indice) == 0.0
+
+
+def test_indice_de_retorno_acumula_os_retornos_mensais():
+    valores, aportes = patrimonio_com_retornos([0.0, 0.10, -0.05, 0.02])
+    esperado = [1.0, 1.10, 1.10 * 0.95, 1.10 * 0.95 * 1.02]
+    assert sc.indice_retorno(valores, aportes).tolist() == pytest.approx(esperado)
+
+
+def test_indice_de_retorno_com_aportes_diferentes_em_cada_mes():
+    # mês 1: 100 -> 100*1,10 + 500 = 610; mês 2: 610*0,90 + 50 = 599; mês 3: 599*1,05 + 0 = 628,95
+    valores = pd.Series([100.0, 610.0, 599.0, 628.95])
+    aportes = pd.Series([100.0, 500.0, 50.0, 0.0])
+    assert sc.indice_retorno(valores, aportes).tolist() == pytest.approx([1.0, 1.10, 1.10 * 0.90, 1.10 * 0.90 * 1.05])
+
+
+def test_indice_de_retorno_nao_divide_por_patrimonio_zero():
+    indice = sc.indice_retorno(pd.Series([0.0, 300.0, 330.0]), pd.Series([0.0, 200.0, 0.0]))
+    assert indice.tolist() == pytest.approx([1.0, 1.0, 1.10])
+
+
+def test_resumo_inclui_drawdown_da_estrategia_e_dos_benchmarks(monkeypatch):
+    datas = pd.date_range("2022-01-31", periods=8, freq="ME")
+    indice = pd.Series([1.0, 1.02, 1.04, 0.832, 0.85, 0.88, 0.90, 0.95], index=datas)   # queda de 20% no 4º mês
+    valores = sc.simular_aportes(indice, pd.Series(200.0, index=datas))
+    curva = pd.DataFrame({"data": [d.date().isoformat() for d in datas], "aporte_mes": 200.0,
+                          "valor_carteira": valores.to_numpy()})
+    ret = pd.DataFrame({t: indice for t in sc.BENCHMARKS_ETF.values()})
+    monkeypatch.setattr(sc, "baixar_dados", lambda tickers, inicio: (ret, ret, ret))
+    monkeypatch.setattr(sc, "baixar_cdi", lambda ini, fim: cdi_diario(ini, fim))
+    monkeypatch.setattr(sc, "CUSTO_TRADE", 0.0)
+    _, resumo = sc.avaliar_benchmarks(curva, "2022-01-01")
+    por_nome = resumo.set_index("nome").max_drawdown_pct
+    assert por_nome["Estratégia"] == pytest.approx(-20.0)
+    assert por_nome["IBOV (BOVA11)"] == pytest.approx(-20.0) and por_nome["IFIX (XFIX11)"] == pytest.approx(-20.0)
+    assert por_nome["CDI"] == pytest.approx(0.0)        # CDI nunca cai
+
+
 def test_benchmark_com_historico_curto_e_falha_do_cdi_viram_aviso(monkeypatch, capsys):
     curva, indice = curva_sintetica()
     curto = indice.copy()
     curto.iloc[:10] = np.nan                                                # ETF listado depois do início
-    ret = pd.DataFrame({"BOVA11.SA": indice, "DIVO11.SA": curto})
+    ret = pd.DataFrame({"BOVA11.SA": indice, "DIVO11.SA": curto})   # sem XFIX11: ticker não encontrado no Yahoo
     monkeypatch.setattr(sc, "baixar_dados", lambda tickers, inicio: (ret, ret, ret))
 
     def cdi_fora_do_ar(inicio, fim):

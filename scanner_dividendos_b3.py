@@ -52,7 +52,9 @@ LIMITE_CLASSE = {"FII": MAX_PESO_FII, "ACAO": MAX_PESO_ACOES}
 # Benchmarks: os mesmos aportes, nas mesmas datas, aplicados em cada referência.
 # ETFs: o preço ajustado do Yahoo aproxima o retorno total do índice (já líquido da taxa do ETF).
 # O DIVO11 é um ETF recente: se o histórico não cobrir o período do backtest, é ignorado com aviso.
-BENCHMARKS_ETF = {"IBOV (BOVA11)": "BOVA11.SA", "IDIV (DIVO11)": "DIVO11.SA"}
+# O XFIX11 replica o IFIX (índice de FIIs) e é o benchmark de FIIs. Se o Yahoo não tiver o ticker, é
+# ignorado com aviso; para usar outra referência de FIIs, troque o ticker aqui.
+BENCHMARKS_ETF = {"IBOV (BOVA11)": "BOVA11.SA", "IDIV (DIVO11)": "DIVO11.SA", "IFIX (XFIX11)": "XFIX11.SA"}
 # CDI diário (% ao dia): série 12 do SGS do Banco Central.
 URL_CDI_BCB = "https://api.bcb.gov.br/dados/serie/bcdata.sgs.12/dados"
 
@@ -293,6 +295,18 @@ def max_drawdown(curva: pd.Series) -> float:
     return float(dd.min() * 100)
 
 
+def indice_retorno(valores: pd.Series, aportes: pd.Series) -> pd.Series:
+    """Índice de retorno ponderado pelo tempo (base 1,0), sem o efeito dos aportes.
+
+    O aporte do mês entra no fim do mês, então o retorno do mês é (valor - aporte) / valor do
+    mês anterior - 1. Custos de negociação ficam no retorno. O drawdown do patrimônio não serve
+    para medir risco: os aportes o empurram para cima e escondem parte da queda.
+    """
+    anterior = valores.shift(1)
+    retorno = ((valores - aportes) / anterior - 1).where(anterior > 0, 0.0)
+    return (1 + retorno).cumprod()
+
+
 def xirr(fluxos: list[tuple[pd.Timestamp, float]]) -> float:
     """Taxa interna de retorno anual de fluxos datados (base de 365 dias, como no Excel).
 
@@ -366,14 +380,17 @@ def simular_aportes(indice: pd.Series, aportes: pd.Series, custo: float = 0.0) -
 
 def resumir(curva: pd.DataFrame, series: dict[str, pd.Series],
             datas_fluxo: pd.DatetimeIndex) -> pd.DataFrame:
-    """Valor final, ganho e XIRR da estratégia e de cada benchmark, com os mesmos fluxos de caixa."""
+    """Valor final, ganho, XIRR e drawdown da estratégia e de cada benchmark, com os mesmos fluxos de caixa."""
     aportes = curva["aporte_mes"].to_numpy(dtype=float)
 
     def linha(nome: str, valores: pd.Series) -> dict:
         final = float(valores.iloc[-1])
         fluxos = list(zip(datas_fluxo, -aportes)) + [(datas_fluxo[-1], final)]
+        patrimonio = pd.Series(valores.to_numpy(dtype=float), index=curva.index)
+        queda = max_drawdown(indice_retorno(patrimonio, curva["aporte_mes"]))
         return {"nome": nome, "total_aportado": float(aportes.sum()), "valor_final": final,
-                "ganho": final - float(aportes.sum()), "xirr_aa_pct": xirr(fluxos) * 100}
+                "ganho": final - float(aportes.sum()), "xirr_aa_pct": xirr(fluxos) * 100,
+                "max_drawdown_pct": queda}
 
     resumo = pd.DataFrame([linha("Estratégia", curva["valor_carteira"])]
                           + [linha(nome, s) for nome, s in series.items()])
@@ -473,7 +490,8 @@ def main() -> None:
         print(f"Valor final estimado: R$ {final:,.2f}")
         print(f"Diferença vs. aportes: R$ {final-aportado:,.2f}")
         print(f"Retorno vs. soma dos aportes: {(final/aportado-1)*100:.2f}%")
-        print(f"Maior drawdown da curva de patrimônio: {max_drawdown(curva['valor_carteira']):.2f}%")
+        print(f"Maior drawdown (índice de retorno, sem o efeito dos aportes): "
+              f"{resumo.loc[0, 'max_drawdown_pct']:.2f}%")
         print(f"XIRR da estratégia: {resumo.loc[0, 'xirr_aa_pct']:.2f}% a.a. (base de 365 dias, sem IR)")
         print("Observação: retorno vs. soma dos aportes não é anualizado; compare estratégias pelo XIRR.")
         print("\n=== COMPARAÇÃO COM BENCHMARKS (mesmos aportes, mesmas datas, sem IR) ===")
@@ -481,6 +499,7 @@ def main() -> None:
         for coluna in ("total_aportado", "valor_final", "ganho"):
             tabela[coluna] = tabela[coluna].map(lambda x: f"R$ {x:,.2f}")
         tabela["xirr_aa_pct"] = tabela["xirr_aa_pct"].map(lambda x: "n/d" if pd.isna(x) else f"{x:.2f}%")
+        tabela["max_drawdown_pct"] = tabela["max_drawdown_pct"].map(lambda x: f"{x:.2f}%")
         tabela["diferenca_xirr_pp"] = tabela["diferenca_xirr_pp"].map(
             lambda x: "" if pd.isna(x) else f"{x:+.2f} p.p.")
         print(tabela.to_string(index=False))
