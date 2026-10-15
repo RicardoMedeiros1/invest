@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Minha carteira</title>
+__META__
+<style>
+__CSS__
+</style>
+</head>
+<body>
+<noscript><p style="padding:16px">Este painel precisa de JavaScript para mostrar os dados.</p></noscript>
+<header class="topo">
+  <div class="topo-in">
+    <div class="topo-linha">
+      <h1>Minha carteira</h1>
+      <span id="status-mercado" class="pilula" role="status" aria-live="polite">...</span>
+      <span class="espaco"></span>
+      <span id="atualizacao" class="atualizacao" aria-live="polite"></span>
+      <button id="btn-atualizar" type="button" class="botao" hidden>Atualizar agora</button>
+    </div>
+    <nav class="nav" aria-label="Seções">
+      <a href="#mercado">Mercado</a><a href="#ranking">Ranking</a><a href="#movimento">Movimento</a>
+      <a href="#plano">Plano de compra</a><a href="#passado">Passado</a><a href="#corretoras">Corretoras</a>
+    </nav>
+  </div>
+</header>
+<main class="pagina">
+  <section id="mercado" aria-labelledby="t-mercado"><h2 id="t-mercado">Mercado agora</h2><div id="cartoes" class="cartoes"></div>
+    <div id="mapa" class="mapa"></div>
+    <p id="mapa-titulo" class="nota"></p></section>
+
+  <section id="ranking" aria-labelledby="t-ranking">
+    <h2 id="t-ranking">As melhores agora</h2>
+    <p class="sub">Na ordem da nota do scanner (dividendos, regularidade e preço no último ano). Clique nos filtros para ordenar do seu jeito.</p>
+    <div class="controles">
+      <div class="grupo" role="group" aria-label="Tipo de ativo">
+        <button type="button" class="chip" data-classe="todos" aria-pressed="true">Todos</button>
+        <button type="button" class="chip" data-classe="ação" aria-pressed="false">Ações</button>
+        <button type="button" class="chip" data-classe="FII" aria-pressed="false">FIIs</button>
+      </div>
+      <label class="campo">Ordenar por
+        <select id="ordem">
+          <option value="nota">Nota do scanner</option><option value="dia">Maior alta hoje</option><option value="mes">Maior alta no mês</option>
+          <option value="ano">Maior alta em 12 meses</option><option value="dy">Mais dividendos</option>
+        </select>
+      </label>
+      <label class="campo">Buscar <input id="busca" type="search" placeholder="ex.: PETR4" autocomplete="off"></label>
+      <label class="campo check"><input id="reprovados" type="checkbox"> Mostrar os que não passaram nos filtros</label>
+    </div>
+    <div class="painel rolagem"><table class="tabela empilha" id="tabela-ranking"></table></div>
+    <p id="aviso-vazio" class="nota" hidden>Nenhum ativo com esses filtros.</p>
+  </section>
+
+  <section id="movimento" aria-labelledby="t-mov">
+    <h2 id="t-mov">Quem mais subiu e caiu</h2>
+    <p class="sub">Entre os aprovados. O dia muda muito de um pregão para o outro; o mês e o ano dizem mais para quem investe a longo prazo.</p>
+    <div class="grupo" role="group" aria-label="Período"><button type="button" class="chip" data-periodo="dia" aria-pressed="true">Hoje</button><button type="button" class="chip" data-periodo="mes" aria-pressed="false">No mês</button><button type="button" class="chip" data-periodo="ano" aria-pressed="false">Em 12 meses</button></div>
+    <div id="movimento-listas" class="duas"></div>
+  </section>
+
+  <section id="plano" aria-labelledby="t-plano">
+    <h2 id="t-plano">Plano de compra</h2>
+    <p class="sub">Só unidades inteiras (não existe meia ação). O plano reforça sempre o ativo com menos dinheiro aplicado; se ele ainda não cabe no caixa, guarda o caixa para o mês seguinte.</p>
+    <form id="config" class="config painel" autocomplete="off">
+      <label class="campo">Quanto você investe por mês (R$)<input id="cfg-valor" type="number" min="1" step="10" inputmode="decimal"></label>
+      <label class="campo">Quantos ativos<input id="cfg-ativos" type="number" min="1" max="10" step="1" inputmode="numeric"></label>
+      <label class="campo">Quantos são FIIs<input id="cfg-fiis" type="number" min="0" max="10" step="1" inputmode="numeric"></label>
+      <label class="campo">Meses no plano<input id="cfg-meses" type="number" min="1" max="12" step="1" inputmode="numeric"></label>
+      <button id="cfg-padrao" type="button" class="botao">Voltar ao padrão</button>
+    </form>
+    <div id="plano-saida"></div>
+  </section>
+
+  <section id="passado" aria-labelledby="t-passado">
+    <h2 id="t-passado">As melhores no passado</h2>
+    <p class="sub">As escolhidas do scanner em cada momento, com o que se sabia na época. O número entre parênteses é em quantos meses do ano o ativo foi escolhido.</p>
+    <div id="passado-saida" class="painel"></div>
+  </section>
+
+  <section id="corretoras" aria-labelledby="t-cor">
+    <h2 id="t-cor">Custos das corretoras</h2>
+    <p id="cor-sub" class="sub"></p>
+    <div class="painel rolagem"><table class="tabela empilha fixa" id="tabela-corretoras"></table></div>
+    <p id="cor-aviso" class="nota"></p>
+  </section>
+
+  <footer class="rodape"><p id="aviso-final" class="nota"></p><p id="rodape-fontes" class="nota"></p></footer>
+</main>
+<script type="application/json" id="dados-iniciais">__DADOS__</script>
+<script>
+__JS__
+</script>
+</body>
+</html>

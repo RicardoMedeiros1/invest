@@ -1,11 +1,14 @@
-# Gera o painel (carteira_simples.py) todo dia útil e publica no GitHub Pages.
+# Gera o painel (carteira_simples.py) durante o pregão e publica no GitHub Pages.
 # Para ligar: Settings > Pages > Build and deployment > Source: "GitHub Actions" (o repositório precisa ser público
 # ou a conta ter GitHub Pro). O endereço aparece no fim da execução, na aba Actions.
+# A página aberta no navegador relê dados.json sozinha a cada minuto, então os preços novos aparecem sem recarregar.
 name: Painel
 
 on:
   schedule:
-    - cron: "30 21 * * 1-5"   # 18h30 em Brasília (UTC-3), de segunda a sexta, depois do fechamento da B3
+    # De 15 em 15 minutos, das 10h às 18h45 em Brasília (UTC-3, sem horário de verão), de segunda a sexta.
+    # O GitHub pode atrasar execuções agendadas (às vezes por muitos minutos); o painel avisa quando os preços estão velhos.
+    - cron: "*/15 13-21 * * 1-5"
   workflow_dispatch:           # botão "Run workflow" na aba Actions, para atualizar na hora
 
 permissions:
@@ -15,7 +18,7 @@ permissions:
 
 concurrency:
   group: painel
-  cancel-in-progress: true
+  cancel-in-progress: false    # não interrompe uma publicação em andamento; no máximo uma fica esperando
 
 jobs:
   construir:
@@ -28,7 +31,7 @@ jobs:
           cache: pip
       - run: pip install -r requirements.txt
       - name: Gerar o painel
-        run: python carteira_simples.py --valor 200 --sem-abrir --saida site/index --link-planilha index.xlsx
+        run: python carteira_simples.py --valor 200 --sem-abrir --saida site/index --link-planilha index.xlsx --dados-json dados.json --intervalo-min 15
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site

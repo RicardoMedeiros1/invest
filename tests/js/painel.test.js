@@ -1,0 +1,148 @@
+// Testes da lógica do painel (painel_web/painel.js) com o Node: node --test tests/js/painel.test.js
+// A paridade com o Python é conferida por tests/test_js.py, que passa os casos pela variável CASOS_PARIDADE.
+const test = require("node:test");
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
+const p = require(path.join(__dirname, "..", "..", "painel_web", "painel.js"));
+
+const em = (iso) => Date.parse(iso);
+
+test("formatação em português", () => {
+  assert.equal(p.fmtBRL(1234.5), "R$ 1.234,50");
+  assert.equal(p.fmtBRL(0), "R$ 0,00");
+  assert.equal(p.fmtBRL(-5), "R$ -5,00");
+  assert.equal(p.fmtBRL(1234567.891), "R$ 1.234.567,89");
+  assert.equal(p.fmtPct(7.46), "7,5%");
+  assert.equal(p.fmtPct(2, true), "+2,0%");
+  assert.equal(p.fmtPct(-2.04, true), "-2,0%");
+  assert.equal(p.fmtPct(-0.04, true), "0,0%");   // arredonda para zero: sem sinal
+  assert.equal(p.fmtPct(null), "n/d");
+  assert.equal(p.fmtPct(NaN), "n/d");
+  assert.equal(p.fmtData("2026-10-15"), "15/10/2026");
+});
+
+test("mercado aberto só em dia útil, das 10h às 18h de Brasília, com preços de hoje", () => {
+  const e = (iso, data) => p.estadoMercado(em(iso), data).estado;
+  assert.equal(e("2026-10-15T14:00:00-03:00", "2026-10-15"), "aberto");               // quinta
+  assert.equal(e("2026-10-15T10:00:00-03:00", "2026-10-15"), "aberto");
+  assert.equal(e("2026-10-15T17:59:00-03:00", "2026-10-15"), "aberto");
+  assert.equal(e("2026-10-15T18:00:00-03:00", "2026-10-15"), "fechado");
+  assert.equal(e("2026-10-15T09:59:00-03:00", "2026-10-14"), "fechado");
+  assert.equal(e("2026-10-17T14:00:00-03:00", "2026-10-16"), "fechado");              // sábado
+  assert.equal(e("2026-10-18T14:00:00-03:00", "2026-10-16"), "fechado");              // domingo
+  assert.equal(e("2026-10-15T14:00:00-03:00", "2026-10-14"), "sem-preco-de-hoje");    // feriado ou primeira atualização ainda não saiu
+});
+
+test("o horário de Brasília não depende do fuso do computador nem da data em UTC", () => {
+  // 01h UTC de sexta ainda é quinta à noite em Brasília
+  assert.equal(p.estadoMercado(em("2026-10-16T01:00:00Z"), "2026-10-15").hoje, "2026-10-15");
+  assert.equal(p.estadoMercado(em("2026-10-15T13:00:00Z"), "2026-10-15").estado, "aberto");   // 10h em Brasília
+  assert.equal(p.estadoMercado(em("2026-10-15T12:59:00Z"), "2026-10-15").estado, "fechado");
+  assert.equal(p.horaBrasilia(em("2026-10-15T17:35:00Z")), "14:35");
+});
+
+test("aviso de atualização atrasada só com o mercado aberto e depois de 3 intervalos (mínimo 45 min)", () => {
+  assert.equal(p.idadeMin(em("2026-10-15T14:30:00-03:00"), "2026-10-15T14:00:00-03:00"), 30);
+  assert.equal(p.idadeMin(em("2026-10-15T13:00:00-03:00"), "2026-10-15T14:00:00-03:00"), 0);   // relógio adiantado: nunca negativo
+  assert.equal(p.atrasado("aberto", 45, 15), false);
+  assert.equal(p.atrasado("aberto", 46, 15), true);
+  assert.equal(p.atrasado("aberto", 46, 30), false);        // intervalo de 30: limite de 90
+  assert.equal(p.atrasado("aberto", 91, 30), true);
+  assert.equal(p.atrasado("aberto", 20, 5), false);         // intervalo curto: continua valendo o mínimo de 45 min
+  assert.equal(p.atrasado("aberto", 46, 5), true);
+  assert.equal(p.atrasado("fechado", 600, 15), false);
+});
+
+test("quantas unidades cabem no valor", () => {
+  assert.equal(p.cotasQueCabem(200, 49.12), 4);
+  assert.equal(p.cotasQueCabem(200, 250), 0);
+  assert.equal(p.cotasQueCabem(200, 0), 0);
+  assert.equal(p.cotasQueCabem(25.15, 5.03), 5);            // 5 x 5,03 = 25,15 exato: a divisão crua dá 4,999... e tiraria uma unidade
+  assert.equal(p.cotasQueCabem(25.14, 5.03), 4);            // mas quem não completa a unidade continua sem ela
+});
+
+const ranking = [["A", "ação"], ["B", "FII"], ["C", "ação"], ["D", "ação"], ["E", "FII"], ["F", "ação"]].map(([t, classe]) => ({ t, classe }));
+
+test("escolha de ativos com cota de FIIs", () => {
+  assert.deepEqual(p.escolherCandidatos(ranking, 3, 0), ["A", "C", "D"]);
+  assert.deepEqual(p.escolherCandidatos(ranking, 3, 1), ["A", "B", "C"]);
+  assert.deepEqual(p.escolherCandidatos(ranking, 4, 2), ["A", "B", "C", "E"]);
+  assert.deepEqual(p.escolherCandidatos(ranking, 3, null), ["A", "B", "C"]);
+  assert.deepEqual(p.escolherCandidatos(ranking.slice(0, 3), 5, 2), ["A", "B", "C"]);     // vaga que ninguém preenche fica vazia
+  assert.deepEqual(p.escolherCandidatos([{ t: "A", classe: "ação" }, { t: "B", classe: "ação" }], 2, 1), ["A", "B"]);   // sem FII: a vaga vai para o próximo
+});
+
+test("plano de compra: unidades inteiras, ativo com menos dinheiro primeiro, caixa guardado", () => {
+  const precos = { PETR4: 49.12, CXSE3: 19.88, ABEV3: 15.36, WEGE3: 49.46, ISAE4: 27.59 };
+  const plano = p.planoDeCompras(precos, Object.keys(precos), 200, 2);
+  assert.deepEqual(plano[0].compras, { PETR4: 1, CXSE3: 2, ABEV3: 2, WEGE3: 1, ISAE4: 1 });
+  assert.ok(Math.abs(plano[0].gasto - 196.65) < 1e-9 && Math.abs(plano[0].sobra - 3.35) < 1e-9);
+  const caro = p.planoDeCompras({ HGLG11: 150, X: 10 }, ["HGLG11", "X"], 100, 2);
+  assert.deepEqual(caro[0].compras, {});                                                  // o FII ainda não cabe: guarda tudo
+  assert.deepEqual(caro[1].compras, { HGLG11: 1, X: 5 });                                 // 200 = FII de 150 + 5 de R$ 10
+  assert.deepEqual(p.planoDeCompras({}, [], 200, 3), []);
+});
+
+test("estimativa de dividendos ignora ativos sem dado", () => {
+  assert.ok(Math.abs(p.estimativaDividendos([6, 8], 2400) - 168) < 1e-9);
+  assert.equal(p.estimativaDividendos([null], 2400), 0);
+  assert.equal(p.estimativaDividendos([], 2400), 0);
+});
+
+const ativos = [
+  { t: "AAA3", classe: "ação", ok: true, pos: 2, dia: 1.0, mes: -1, ano: 10, dy: 6 },
+  { t: "BBB11", classe: "FII", ok: true, pos: 1, dia: -2.0, mes: 3, ano: null, dy: 8 },
+  { t: "CCC4", classe: "ação", ok: true, pos: 3, dia: null, mes: 2, ano: 5, dy: null },
+  { t: "DDD3", classe: "ação", ok: false, pos: null, dia: 9, mes: 9, ano: 9, dy: 1 },
+  { t: "EEE3", classe: "ação", ok: true, pos: 4, dia: 1.0, mes: 0, ano: 7, dy: 4 },
+];
+
+test("filtros e ordem da tabela", () => {
+  assert.deepEqual(p.filtrarAtivos(ativos).map((a) => a.t), ["AAA3", "BBB11", "CCC4", "EEE3"]);                // reprovado fica de fora
+  assert.deepEqual(p.filtrarAtivos(ativos, { reprovados: true }).map((a) => a.t).includes("DDD3"), true);
+  assert.deepEqual(p.filtrarAtivos(ativos, { classe: "FII" }).map((a) => a.t), ["BBB11"]);
+  assert.deepEqual(p.filtrarAtivos(ativos, { busca: " ccc" }).map((a) => a.t), ["CCC4"]);
+  assert.deepEqual(p.ordenarAtivos(ativos, "nota").map((a) => a.t), ["BBB11", "AAA3", "CCC4", "EEE3", "DDD3"]);   // sem posição por último
+  assert.deepEqual(p.ordenarAtivos(ativos, "dia").map((a) => a.t), ["DDD3", "AAA3", "EEE3", "BBB11", "CCC4"]);   // empate AAA3/EEE3 segue a ordem original; sem dado por último
+  assert.deepEqual(p.ordenarAtivos(ativos, "dy").map((a) => a.t), ["BBB11", "AAA3", "EEE3", "DDD3", "CCC4"]);
+  assert.deepEqual(ativos.map((a) => a.t), ["AAA3", "BBB11", "CCC4", "DDD3", "EEE3"]);                            // não mexe na lista original
+});
+
+test("quem mais subiu e caiu só entre os aprovados e só quedas reais em 'caíram'", () => {
+  const { sobem, caem } = p.maisMenos(ativos, "dia", 5);
+  assert.deepEqual(sobem.map((a) => a.t), ["AAA3", "EEE3", "BBB11"]);       // CCC4 sem dado e DDD3 reprovado ficam de fora
+  assert.deepEqual(caem.map((a) => a.t), ["BBB11"]);
+  assert.deepEqual(p.maisMenos(ativos, "mes", 1).caem.map((a) => a.t), ["AAA3"]);
+  assert.deepEqual(p.maisMenos(ativos, "dia", 1).sobem.map((a) => a.t), ["AAA3"]);
+});
+
+test("gráfico de linha", () => {
+  assert.equal(p.caminhoSerie([1], 92, 28), "");
+  assert.equal(p.caminhoSerie([], 92, 28), "");
+  assert.equal(p.caminhoSerie([null, null], 92, 28), "");
+  const d = p.caminhoSerie([1, 2, 3, 4], 92, 28);
+  assert.equal(d.match(/L/g).length, 3);
+  assert.ok(d.startsWith("M2.0 26.0") && d.endsWith("L90.0 2.0"));          // preço mais baixo embaixo, mais alto em cima
+  assert.ok(p.caminhoSerie([5, 5, 5], 92, 28).startsWith("M"));            // série parada não divide por zero
+  assert.ok(!/NaN|Infinity/.test(p.caminhoSerie([5, 5, 5], 92, 28)));
+});
+
+test("paridade com o Python", { skip: !process.env.CASOS_PARIDADE && "sem CASOS_PARIDADE" }, () => {
+  const casos = JSON.parse(fs.readFileSync(process.env.CASOS_PARIDADE, "utf-8"));
+  assert.ok(casos.escolha.length > 50 && casos.plano.length > 50);
+  for (const c of casos.escolha) {
+    assert.deepEqual(p.escolherCandidatos(c.ranking, c.top_n, c.n_fiis), c.esperado, JSON.stringify(c));
+  }
+  for (const c of casos.plano) {
+    const got = p.planoDeCompras(c.precos, c.ordem, c.valor, c.meses);
+    assert.equal(got.length, c.esperado.length);
+    got.forEach((m, i) => {
+      assert.deepEqual(m.compras, c.esperado[i].compras, JSON.stringify(c));
+      assert.ok(Math.abs(m.gasto - c.esperado[i].gasto) < 1e-6 && Math.abs(m.sobra - c.esperado[i].sobra) < 1e-6, JSON.stringify(c));
+    });
+  }
+  for (const c of casos.cotas) assert.equal(p.cotasQueCabem(c.valor, c.preco), c.esperado, JSON.stringify(c));
+  for (const c of casos.brl) assert.equal(p.fmtBRL(c.x), c.esperado);
+  for (const c of casos.pct) assert.equal(p.fmtPct(c.x, c.sinal), c.esperado);
+});

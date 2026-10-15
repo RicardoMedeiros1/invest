@@ -151,6 +151,14 @@ def test_cota_zero_quando_a_unidade_custa_mais_que_o_valor():
     assert cs._unidades_texto(next(t.itertuples()), 200.0) == "não cabe (1 custa R$ 250,00)"
 
 
+def test_unidade_exata_nao_se_perde_por_erro_de_ponto_flutuante():
+    # 5 x R$ 5,03 = R$ 25,15: a divisão crua dá 4,9999... e tiraria uma unidade
+    ranking = pd.DataFrame({"ticker": [], "score": []})
+    for valor, preco, esperado in ((25.15, 5.03, 5), (25.14, 5.03, 4), (200.0, 49.12, 4)):
+        t = cs.montar_tabela({"X.SA": pd.Series([preco], index=[HOJE])}, {}, ranking, valor)
+        assert t.cotas.iloc[0] == esperado and t.custo.iloc[0] == pytest.approx(esperado * preco)
+
+
 def test_melhores_por_periodo_so_entre_aprovados_e_ignora_sem_dado():
     fech, prov = fechamentos_de_teste()
     t = cs.montar_tabela(fech, prov, ranking_de_teste(), 200.0)
@@ -203,6 +211,10 @@ def painel_de_teste():
 
 
 def painel_e_tabela():
+    return painel_tabela_e_fechamentos()[:2]
+
+
+def painel_tabela_e_fechamentos():
     ordem = ["PETR4.SA", "CXSE3.SA", "ABEV3.SA", "WEGE3.SA", "ISAE4.SA"]
     precos = {"PETR4.SA": 49.12, "CXSE3.SA": 19.88, "ABEV3.SA": 15.36, "WEGE3.SA": 49.46, "ISAE4.SA": 27.59}
     fech = {t: serie_diaria(p) for t, p in precos.items()}
@@ -211,7 +223,7 @@ def painel_e_tabela():
                             "retorno_preco_12m_pct": 5.0, "score": np.linspace(0.95, 0.85, 5)})
     tabela = cs.montar_tabela(fech, prov, ranking, 200.0)
     hist = {pd.Timestamp("2026-08-31"): ordem, pd.Timestamp("2026-09-30"): ordem}
-    return cs.montar_painel(tabela, ordem, hist, 200.0, 2, HOJE), tabela
+    return cs.montar_painel(tabela, ordem, hist, 200.0, 2, HOJE), tabela, fech
 
 
 def test_texto_do_painel_traz_as_secoes_e_o_plano_em_reais():
@@ -224,22 +236,6 @@ def test_texto_do_painel_traz_as_secoes_e_o_plano_em_reais():
     assert "Usa os preços de hoje nos 2 meses. O gasto de um mês pode passar de R$ 200,00 porque inclui a sobra" in texto
     assert "R$ 200,00 compram: 4 (R$ 196,48)" in texto                                # PETR4 a R$ 49,12
     assert ".SA" not in texto and "2026-09:" in texto and "Nubank" in texto
-
-
-def test_html_do_painel_e_autonomo_e_nao_mostra_o_sufixo_do_yahoo():
-    pagina = cs.html_painel(painel_de_teste())
-    for titulo in ("As melhores agora", "Quanto cada um subiu", "Plano dos primeiros 2 meses", "As melhores no passado", "Custos das corretoras"):
-        assert f"<h2>{titulo}</h2>" in pagina
-    assert pagina.startswith("<!doctype html>") and "<script" not in pagina and "http" in pagina   # links das fontes
-    assert ".SA" not in pagina and "PETR4" in pagina and "R$ 196,65" in pagina
-    assert "pode passar de R$ 200,00 porque inclui a sobra dos meses anteriores" in pagina
-
-
-def test_html_escapa_textos_de_fora(monkeypatch):
-    monkeypatch.setattr(cs, "CORRETORAS", [{"nome": "<script>alert(1)</script>", "corretagem": "a&b", "custodia": "c",
-                                            "atencao": "d", "fonte": "https://x.test/?a=1&b=2"}])
-    pagina = cs.html_painel(painel_de_teste())
-    assert "<script>alert" not in pagina and "&lt;script&gt;" in pagina and "a&amp;b" in pagina and "a=1&amp;b=2" in pagina
 
 
 def test_quadro_de_corretoras_tem_fonte_e_avisos():
@@ -305,7 +301,7 @@ def test_main_atualiza_a_planilha_e_o_html_e_mostra_o_painel(monkeypatch, tmp_pa
     abas = pd.read_excel(tmp_path / "p.xlsx", sheet_name=None)
     assert set(abas) == {"Melhores agora", "Quanto subiu", "Plano de compra", "Passado", "Corretoras", "Todos os ativos"}
     assert len(abas["Todos os ativos"]) == 6 and not abas["Todos os ativos"]["Ativo"].str.contains(".SA", regex=False).any()
-    assert "Sua carteira em poucos passos" in (tmp_path / "p.html").read_text(encoding="utf-8")
+    assert "<title>Minha carteira</title>" in (tmp_path / "p.html").read_text(encoding="utf-8")
     assert "Planilha atualizada" in saida and "Relatório atualizado" in saida
 
 

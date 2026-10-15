@@ -25,19 +25,28 @@ Para quem quer só o essencial, sem benchmarks nem XIRR:
 python carteira_simples.py --valor 200
 ```
 
-Abre no navegador um relatório (e mostra o mesmo no terminal) com:
+Abre no navegador um painel (e mostra o mesmo no terminal) com:
 
-- **As melhores agora**, ações e FIIs, na ordem da nota do scanner: preço, dividendos pagos nos últimos 12 meses e quantas unidades cabem no seu aporte.
-- **Quanto cada um subiu** no último pregão, no último mês e em 12 meses, entre os aprovados. O dia muda muito de um pregão para o outro; o mês e o ano dizem mais para quem investe a longo prazo.
-- **Plano dos primeiros meses**, só com unidades inteiras (na vida real não existe meia ação). O plano reforça sempre o ativo com menos dinheiro aplicado; se ele ainda não cabe no caixa (um FII de R$ 150 com aporte de R$ 200, por exemplo), guarda o caixa para o mês seguinte. Inclui uma estimativa de dividendos, que repete o rendimento do último ano e não é promessa.
+- **Mercado agora**: Ibovespa e dólar, quantos dos aprovados sobem no dia, a maior alta e a maior queda e um quadrado colorido para cada ativo aprovado (verde sobe, vermelho cai; o sinal e a seta mostram o mesmo, então não depende só da cor). O topo diz se o **mercado está aberto ou fechado** e a que horas os preços foram atualizados.
+- **As melhores agora**, ações e FIIs, na ordem da nota do scanner: preço, variação no dia, no mês e em 12 meses, dividendos pagos nos últimos 12 meses (barra), um gráfico do preço nos últimos 3 meses e quantas unidades cabem no seu aporte. Dá para filtrar (ações, FIIs, busca por nome), ordenar (nota, maior alta do dia, do mês, do ano, mais dividendos) e mostrar também os que não passaram nos filtros.
+- **Quem mais subiu e caiu** no dia, no mês ou em 12 meses, entre os aprovados. O dia muda muito de um pregão para o outro; o mês e o ano dizem mais para quem investe a longo prazo.
+- **Plano de compra**, que **você ajusta na própria página** (quanto investe por mês, quantos ativos, quantos FIIs, quantos meses; a escolha fica guardada no navegador). Só unidades inteiras (na vida real não existe meia ação). O plano reforça sempre o ativo com menos dinheiro aplicado; se ele ainda não cabe no caixa (um FII de R$ 150 com aporte de R$ 200, por exemplo), guarda o caixa para o mês seguinte. Mostra o que comprar neste mês, como o dinheiro se divide entre os ativos e uma estimativa de dividendos, que repete o rendimento do último ano e não é promessa.
 - **As melhores no passado**, por ano e nos últimos 12 meses: o que o scanner teria escolhido em cada momento, com os dados da época.
 - **Custos das corretoras**, de fontes públicas (arquivo `corretoras.py`, com a data da pesquisa e o link de cada fonte). Tarifas mudam: confirme na tabela oficial antes de abrir conta. O preço de uma ação ou FII é o mesmo em qualquer corretora; o que muda são taxas, aplicativo e atendimento.
 
-Opções: `--valor` (quanto você investe por mês), `--ativos` (quantos no plano, padrão 5), `--fiis` (quantos deles são FIIs, padrão 0), `--meses` (meses do plano, padrão 3), `--sem-abrir` (não abre o navegador). Atualiza a planilha `carteira.xlsx` (veja "Uma só planilha" abaixo) e o relatório `carteira.html`, sempre com esses mesmos nomes. Usa o mesmo filtro do scanner, então os dois sempre concordam sobre quem está aprovado. Os preços diários vêm do Yahoo Finance e podem ter alguns minutos de atraso: confira a cotação no aplicativo da corretora antes de comprar.
+Opções: `--valor` (quanto você investe por mês), `--ativos` (quantos no plano, padrão 5), `--fiis` (quantos deles são FIIs, padrão 0), `--meses` (meses do plano, padrão 3), `--sem-abrir` (não abre o navegador). Atualiza a planilha `carteira.xlsx` (veja "Uma só planilha" abaixo) e o painel `carteira.html`, sempre com esses mesmos nomes. O `carteira.html` é um arquivo só (funciona sem internet) e mostra os preços do momento em que você rodou o comando; para ele se atualizar sozinho, use o link da internet abaixo. Usa o mesmo filtro do scanner, então os dois sempre concordam sobre quem está aprovado. Os preços diários vêm do Yahoo Finance e podem ter alguns minutos de atraso: confira a cotação no aplicativo da corretora antes de comprar.
 
-## Abrir o painel em qualquer lugar (link na internet)
+## Abrir o painel em qualquer lugar (link na internet, atualiza sozinho)
 
-O GitHub gera o painel sozinho **todo dia útil às 18h30 (Brasília)**, depois do fechamento da bolsa, e publica num link que abre em qualquer aparelho, sem o seu computador ligado. A página tem um botão para baixar a planilha. O trabalho é feito por `.github/workflows/painel.yml`.
+O GitHub gera o painel sozinho **de 15 em 15 minutos durante o pregão (das 10h às 18h45 de Brasília, de segunda a sexta)** e publica num link que abre em qualquer aparelho, sem o seu computador ligado. O trabalho é feito por `.github/workflows/painel.yml`.
+
+Como a atualização funciona, sem mistério:
+
+1. A cada 15 minutos o GitHub baixa os preços do Yahoo Finance, refaz as contas e publica a página junto com um arquivo de dados (`dados.json`).
+2. Com a página aberta no navegador, ela **relê esse arquivo sozinha a cada minuto** e troca os preços na tela, sem você recarregar. O botão "Atualizar agora" força a busca na hora.
+3. O topo mostra "Mercado aberto" ou "Mercado fechado" e "atualizado há X min". Se o mercado estiver aberto e os preços tiverem mais de 45 minutos, aparece um aviso de **atualização atrasada**.
+
+Isso **não é tempo real, tick a tick**: o Yahoo pode atrasar as cotações da B3 em alguns minutos, o GitHub às vezes atrasa execuções agendadas (às vezes por muitos minutos) e a página só enxerga o que o GitHub publicou. Serve para acompanhar o dia com tranquilidade, não para operar no segundo. Confira o preço no aplicativo da corretora antes de comprar.
 
 Para ligar, uma única vez, no site do GitHub:
 
@@ -47,9 +56,11 @@ Para ligar, uma única vez, no site do GitHub:
 
 Pontos de atenção:
 
-- **Qualquer pessoa com o link vê o painel**: preços, a lista do scanner e o plano de compra para R$ 200 por mês. Ele não tem as suas posições nem dados pessoais. O código e o histórico do repositório também ficam públicos.
-- Para mudar o valor do aporte, edite `--valor 200` em `.github/workflows/painel.yml`. Para pausar, use Actions > Painel > menu `...` > Disable workflow. Para tirar do ar, volte o repositório para privado.
-- Se o Yahoo Finance falhar num dia, o painel do dia anterior continua no ar e a execução aparece como falha na aba Actions.
+- **Qualquer pessoa com o link vê o painel**: preços, a lista do scanner e o plano de compra (por padrão para R$ 200 por mês; cada visitante pode mudar o valor na própria página, sem afetar os outros). Ele não tem as suas posições nem dados pessoais. O código e o histórico do repositório também ficam públicos.
+- Para mudar o valor padrão do aporte, edite `--valor 200` em `.github/workflows/painel.yml`. Para pausar, use Actions > Painel > menu `...` > Disable workflow. Para tirar do ar, volte o repositório para privado.
+- Para mudar a frequência, edite a linha `cron` (por exemplo, `*/30` para de 30 em 30 minutos) e o `--intervalo-min` do comando, para o aviso de atraso acompanhar. O GitHub não aceita menos de 5 minutos.
+- Se o Yahoo Finance falhar numa execução, a página anterior continua no ar (só aparece o aviso de atraso) e a execução aparece como falha na aba Actions; o GitHub pode mandar um e-mail sobre isso.
+- Cada execução leva cerca de 1 minuto: são 36 por dia útil, bem dentro do limite gratuito de repositórios públicos.
 - O GitHub pausa execuções agendadas de repositórios sem nenhuma atividade por 60 dias. Se o painel parar de atualizar, abra a aba Actions e reative o fluxo (ou faça qualquer commit).
 - Só o painel simples é publicado. O scanner completo (backtest e benchmarks) continua rodando no seu computador, com a planilha local.
 
@@ -147,4 +158,6 @@ pip install pytest
 python -m pytest
 ```
 
-Os testes são offline (dados sintéticos e respostas simuladas do Banco Central) e cobrem o painel simples (variações, plano de compra, relatório) e a contagem de proventos, o corte de proventos, os limites de peso, a regra de venda, o tratamento de ativos sem cotação, o XIRR, o drawdown, os benchmarks (inclusive o misto), a composição da carteira e o diagnóstico de exclusão.
+Se você tiver o Node.js instalado, os testes também conferem a lógica do painel em JavaScript (as contas da página, como o plano de compra, precisam dar o mesmo resultado das do Python); sem o Node, esses testes são pulados.
+
+Os testes são offline (dados sintéticos e respostas simuladas do Banco Central) e cobrem o painel simples (variações, plano de compra, a página, os dados que ela mostra e a publicação automática) e a contagem de proventos, o corte de proventos, os limites de peso, a regra de venda, o tratamento de ativos sem cotação, o XIRR, o drawdown, os benchmarks (inclusive o misto), a composição da carteira e o diagnóstico de exclusão.
