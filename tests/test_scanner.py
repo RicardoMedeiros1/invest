@@ -103,6 +103,7 @@ def test_backtest_respeita_limites_de_peso(monkeypatch):
         assert por_ativo.max() <= sc.MAX_PESO_ATIVO + 1e-9
         assert por_ativo.reindex(FIIS_TESTE).sum() <= sc.MAX_PESO_FII + 1e-9
     assert curva.caixa.iloc[-1] > 0                                     # limites apertados: sobra caixa
+    assert (curva.valor_posicoes_fiis / curva.valor_carteira).max() <= sc.MAX_PESO_FII + 1e-9
 
 
 # ---------- item 1: vender só quando sai dos filtros ----------
@@ -151,6 +152,44 @@ def test_falta_pontual_de_cotacao_nao_gera_queda_falsa(monkeypatch):
     monkeypatch.setattr(sc, "selecionar", ranking_fixo(lambda i: ["B", "A"] if i < 42 else ["A", "B"]))
     curva, _ = sc.backtest(raw, adj, div, 200.0, 1)
     assert curva.valor_carteira.is_monotonic_increasing                # preços planos: só cresce com aportes
+
+
+# ---------- composição: ações x FIIs ----------
+
+def test_backtest_registra_o_valor_das_posicoes_por_classe(monkeypatch):
+    tickers = ["HGLG11.SA", ACAO_TESTE]
+    raw, adj, div = mercado(tickers)
+    monkeypatch.setattr(sc, "selecionar", ranking_fixo(lambda i: tickers))
+    curva, _ = sc.backtest(raw, adj, div, 200.0, 2)
+    assert (curva.valor_posicoes_acoes + curva.valor_posicoes_fiis).to_numpy() == pytest.approx(curva.valor_posicoes.to_numpy())
+    assert (curva.valor_posicoes_fiis / curva.valor_posicoes).to_numpy() == pytest.approx(0.5)   # aporte dividido igualmente
+
+
+def test_ticker_fora_da_lista_conta_como_acao(monkeypatch):
+    raw, adj, div = mercado(["A", "B"])
+    monkeypatch.setattr(sc, "selecionar", ranking_fixo(lambda i: ["A", "B"]))
+    curva, _ = sc.backtest(raw, adj, div, 200.0, 2)
+    assert (curva.valor_posicoes_fiis == 0).all() and (curva.valor_posicoes_acoes > 0).all()
+
+
+def test_composicao_final_media_e_faixa():
+    curva = pd.DataFrame({
+        "valor_posicoes_acoes": [0.0, 100.0, 60.0, 50.0],
+        "valor_posicoes_fiis": [0.0, 100.0, 140.0, 150.0],
+        "caixa": [200.0, 0.0, 0.0, 20.0],
+        "valor_carteira": [200.0, 200.0, 200.0, 220.0],
+    })
+    mix = sc.composicao(curva)
+    assert mix["fiis_final_pct"] == pytest.approx(75.0) and mix["acoes_final_pct"] == pytest.approx(25.0)
+    assert mix["fiis_media_pct"] == pytest.approx((50 + 70 + 75) / 3)       # mês só com caixa não entra
+    assert mix["fiis_min_pct"] == pytest.approx(50.0) and mix["fiis_max_pct"] == pytest.approx(75.0)
+    assert mix["caixa_final_pct"] == pytest.approx(20 / 220 * 100)
+
+
+def test_composicao_sem_posicoes_devolve_none():
+    curva = pd.DataFrame({"valor_posicoes_acoes": [0.0, 0.0], "valor_posicoes_fiis": [0.0, 0.0],
+                          "caixa": [200.0, 400.0], "valor_carteira": [200.0, 400.0]})
+    assert sc.composicao(curva) is None
 
 
 # ---------- fluxo completo, offline ----------
@@ -202,6 +241,9 @@ def test_main_gera_os_csv_com_benchmarks(monkeypatch, tmp_path, capsys):
     saida = capsys.readouterr().out
     assert "RESULTADO DO BACKTEST" in saida and "XIRR da estratégia" in saida and "COMPARAÇÃO COM BENCHMARKS" in saida
     assert "Maior drawdown (índice de retorno" in saida
+    assert "COMPOSIÇÃO DA CARTEIRA" in saida and "FIIs" in saida
+    assert {"valor_posicoes_acoes", "valor_posicoes_fiis"} <= set(curva.columns)
+    assert (curva.valor_posicoes_acoes + curva.valor_posicoes_fiis).to_numpy() == pytest.approx(curva.valor_posicoes.to_numpy())
 
 
 def test_main_sem_benchmark_nao_baixa_nada_alem_do_universo(monkeypatch, tmp_path):
@@ -212,7 +254,8 @@ def test_main_sem_benchmark_nao_baixa_nada_alem_do_universo(monkeypatch, tmp_pat
     comparacao = pd.read_csv(tmp_path / "r_comparacao.csv")
     assert comparacao.nome.tolist() == ["Estratégia"] and comparacao.xirr_aa_pct.notna().all()
     colunas = pd.read_csv(tmp_path / "r_backtest.csv").columns
-    assert [c for c in colunas if c.startswith("valor_") and c not in ("valor_carteira", "valor_posicoes")] == []
+    proprias = {"valor_carteira", "valor_posicoes", "valor_posicoes_acoes", "valor_posicoes_fiis"}
+    assert [c for c in colunas if c.startswith("valor_") and c not in proprias] == []
 
 
 # ---------- XIRR ----------

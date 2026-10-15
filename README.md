@@ -30,7 +30,7 @@ Arquivos gerados (prefixo `resultado_dividendos`, ou o valor de `--saida`):
 | Arquivo | Conteúdo |
 |---|---|
 | `*_ranking.csv` | Ativos aprovados no último mês fechado, com yield de 12 meses, períodos com proventos, retorno de preço em 12 meses e pontuação |
-| `*_backtest.csv` | Patrimônio mensal, total aportado, caixa, ganho/perda, ativos mantidos, quantidade de elegíveis e os selecionados, mais uma coluna `valor_*` por benchmark |
+| `*_backtest.csv` | Patrimônio mensal, total aportado, caixa, ganho/perda, ativos mantidos, quantidade de elegíveis e os selecionados, valor das posições em ações e em FIIs (`valor_posicoes_acoes`, `valor_posicoes_fiis`), mais uma coluna `valor_*` por benchmark |
 | `*_operacoes.csv` | Compras dos aportes e vendas por saída dos filtros (coluna `observacao` marca vendas feitas pelo último preço conhecido) |
 | `*_comparacao.csv` | Valor final, ganho, XIRR e drawdown da estratégia e de cada benchmark, e a diferença de XIRR em pontos percentuais |
 
@@ -82,7 +82,7 @@ Não há regra de "comprar porque o preço caiu": uma queda pode ser oportunidad
 3. **Fundamentos:** os filtros não usam balanços disponíveis em cada data, então o ranking histórico pode não refletir o que se sabia na época.
 4. **Custos e tributação:** a taxa é uma estimativa. Impostos, spreads, liquidez e lotes fracionários não estão modelados.
 5. **Métricas:** o drawdown usa pontos mensais, então não captura quedas dentro do mês. Não há volatilidade nem outras medidas de risco.
-6. **Benchmarks:** todos sem imposto de renda (CDI bruto). O IBOV e o IFIX entram como ETFs, com a taxa de administração embutida. O misto 50/50 só é uma boa referência se a sua carteira tiver, de fato, algo perto de metade em ações e metade em FIIs. A estratégia não fixa essa proporção: ela depende do que passa nos filtros em cada mês. Confira a proporção real em `*_operacoes.csv` (compras por ticker) e, se ela for bem diferente, ajuste os pesos em `BENCHMARKS_MISTOS` ou compare com o IBOV e o IFIX separadamente. O resultado depende muito do período: um backtest curto compara a estratégia com cada benchmark em um único ciclo de mercado.
+6. **Benchmarks:** todos sem imposto de renda (CDI bruto). O IBOV e o IFIX entram como ETFs, com a taxa de administração embutida. O misto 50/50 só é uma boa referência se a sua carteira tiver, de fato, algo perto de metade em ações e metade em FIIs. A estratégia não fixa essa proporção: ela depende do que passa nos filtros em cada mês. O script imprime a proporção real na seção **Composição da carteira** (ações x FIIs entre as posições, sem o caixa): ao final, a média mensal e a faixa de variação do peso de FIIs. Se ela for bem diferente de 50/50, ajuste os pesos em `BENCHMARKS_MISTOS` ou compare com o IBOV e o IFIX separadamente. Ticker fora das listas `ACOES` e `FIIS` conta como ação. O resultado depende muito do período: um backtest curto compara a estratégia com cada benchmark em um único ciclo de mercado.
 7. **Dados do Yahoo Finance:** podem ter falhas e lacunas, principalmente em proventos de FIIs. Para FIIs, a CVM publica informes mensais estruturados.
 
 ## Testes
@@ -92,4 +92,4 @@ pip install pytest
 python -m pytest
 ```
 
-Os testes são offline (dados sintéticos e respostas simuladas do Banco Central) e cobrem a contagem de proventos, o corte de proventos, os limites de peso, a regra de venda, o tratamento de ativos sem cotação, o XIRR, o drawdown e os benchmarks (inclusive o misto).
+Os testes são offline (dados sintéticos e respostas simuladas do Banco Central) e cobrem a contagem de proventos, o corte de proventos, os limites de peso, a regra de venda, o tratamento de ativos sem cotação, o XIRR, o drawdown, os benchmarks (inclusive o misto) e a composição da carteira.

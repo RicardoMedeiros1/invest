@@ -275,14 +275,18 @@ def backtest(raw: pd.DataFrame, adj: pd.DataFrame, div: pd.DataFrame,
                               "custo_estimado": verba - q * p, "observacao": ""})
         caixa = caixa if caixa > 1e-9 else 0.0  # descarta resíduo de ponto flutuante
 
-        valor_posicoes = sum(q * float(ref_hoje[t]) for t, q in unidades.items()
-                             if pd.notna(ref_hoje.get(t, np.nan)))
+        valor_por_classe = {"ACAO": 0.0, "FII": 0.0}
+        for t, q in unidades.items():
+            if pd.notna(ref_hoje.get(t, np.nan)):
+                valor_por_classe[CLASSE.get(t, "ACAO")] += q * float(ref_hoje[t])
+        valor_posicoes = sum(valor_por_classe.values())
         valor_fim = valor_posicoes + caixa
         retorno_total = (valor_fim / total_aportado - 1) * 100 if total_aportado else 0.0
         registros.append({
             "data": dt.date().isoformat(), "aporte_mes": aporte,
             "total_aportado": total_aportado, "valor_carteira": valor_fim,
             "valor_posicoes": valor_posicoes, "caixa": caixa,
+            "valor_posicoes_acoes": valor_por_classe["ACAO"], "valor_posicoes_fiis": valor_por_classe["FII"],
             "ganho_perda_vs_aportes": valor_fim - total_aportado,
             "retorno_vs_aportes_pct": retorno_total,
             "ativos_na_carteira": len(unidades),
@@ -309,6 +313,22 @@ def indice_retorno(valores: pd.Series, aportes: pd.Series) -> pd.Series:
     anterior = valores.shift(1)
     retorno = ((valores - aportes) / anterior - 1).where(anterior > 0, 0.0)
     return (1 + retorno).cumprod()
+
+
+def composicao(curva: pd.DataFrame) -> dict[str, float] | None:
+    """Proporção de ações e FIIs entre as posições (sem o caixa), em %, ao final e ao longo do período.
+
+    Devolve None se a carteira nunca teve posições. A média é a média dos pesos mensais.
+    """
+    posicoes = curva["valor_posicoes_acoes"] + curva["valor_posicoes_fiis"]
+    peso_fiis = (curva["valor_posicoes_fiis"] / posicoes).where(posicoes > 0).dropna() * 100
+    if peso_fiis.empty:
+        return None
+    final = float(peso_fiis.iloc[-1])
+    return {"fiis_final_pct": final, "acoes_final_pct": 100 - final,
+            "fiis_media_pct": float(peso_fiis.mean()), "acoes_media_pct": 100 - float(peso_fiis.mean()),
+            "fiis_min_pct": float(peso_fiis.min()), "fiis_max_pct": float(peso_fiis.max()),
+            "caixa_final_pct": float(curva["caixa"].iloc[-1] / curva["valor_carteira"].iloc[-1] * 100)}
 
 
 def xirr(fluxos: list[tuple[pd.Timestamp, float]]) -> float:
@@ -518,6 +538,15 @@ def main() -> None:
             lambda x: "" if pd.isna(x) else f"{x:+.2f} p.p.")
         print(tabela.to_string(index=False))
         print("diferenca_xirr_pp: XIRR da estratégia menos o do benchmark (positivo = estratégia rendeu mais).")
+        mix = composicao(curva)
+        if mix:
+            print("\n=== COMPOSIÇÃO DA CARTEIRA (ações x FIIs, entre as posições) ===")
+            print(f"Ao final:        ações {mix['acoes_final_pct']:.1f}% | FIIs {mix['fiis_final_pct']:.1f}%"
+                  f"  (caixa: {mix['caixa_final_pct']:.1f}% do patrimônio)")
+            print(f"Média mensal:    ações {mix['acoes_media_pct']:.1f}% | FIIs {mix['fiis_media_pct']:.1f}%")
+            print(f"Peso de FIIs no período: de {mix['fiis_min_pct']:.1f}% a {mix['fiis_max_pct']:.1f}%")
+            print("Compare com os pesos do benchmark misto (BENCHMARKS_MISTOS); se a proporção for bem diferente, "
+                  "o misto é uma referência fraca.")
     print("\n=== RANKING ATUAL (sinal do último mês fechado) ===")
     if ranking.empty:
         print("Nenhum ativo passou nos filtros. Não relaxe os filtros sem revisar a qualidade dos dados.")
