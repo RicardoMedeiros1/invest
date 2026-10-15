@@ -18,6 +18,10 @@ def comando_do_fluxo() -> list[str]:
     return shlex.split(linha.split("carteira_simples.py", 1)[1])
 
 
+def cron_do_fluxo() -> str:
+    return next(l for l in FLUXO.splitlines() if l.strip().startswith("- cron:")).split('"')[1]
+
+
 def test_o_comando_do_fluxo_e_aceito_pelo_painel():
     args = cs.criar_parser().parse_args(comando_do_fluxo())
     assert args.saida == "site/index" and args.sem_abrir and args.link_planilha == "index.xlsx" and args.valor == 200
@@ -30,7 +34,7 @@ def test_o_fluxo_publica_a_mesma_pasta_que_o_painel_gera():
 
 
 def test_o_fluxo_roda_de_15_em_15_minutos_no_pregao_e_sob_demanda():
-    assert 'cron: "*/15 13-21 * * 1-5"' in FLUXO and "workflow_dispatch:" in FLUXO      # 10h às 18h45 de Brasília, seg a sex
+    assert 'cron: "7,22,37,52 13-21 * * 1-5"' in FLUXO and "workflow_dispatch:" in FLUXO   # 10h07 às 18h52 de Brasília, seg a sex
     assert "pages: write" in FLUXO and "id-token: write" in FLUXO and "contents: read" in FLUXO
     assert "pip install -r requirements.txt" in FLUXO                                  # as mesmas dependências do uso local
 
@@ -41,8 +45,16 @@ def test_publicar_so_depois_de_gerar_o_painel():
 
 def test_o_intervalo_do_fluxo_bate_com_o_cron_e_com_o_aviso_da_pagina():
     args = cs.criar_parser().parse_args(comando_do_fluxo())
-    passo = int(next(l for l in FLUXO.splitlines() if l.strip().startswith("- cron:")).split('"')[1].split()[0].split("/")[1])
-    assert args.intervalo_min == passo
+    minutos = [int(m) for m in cron_do_fluxo().split()[0].split(",")]
+    folgas = {b - a for a, b in zip(minutos, minutos[1:] + [minutos[0] + 60])}
+    assert folgas == {args.intervalo_min}                                              # os minutos do cron andam sempre o mesmo passo
+
+
+def test_o_cron_evita_os_horarios_de_pico_do_github():
+    minutos = {int(m) for m in cron_do_fluxo().split()[0].split(",")}
+    assert not minutos & {0, 15, 30, 45}                                               # o GitHub atrasa ou descarta execuções nesses minutos
+    horas = cron_do_fluxo().split()[1]
+    assert horas == "13-21" and cron_do_fluxo().split()[4] == "1-5"                    # 10h às 18h59 de Brasília, de segunda a sexta
 
 
 def test_o_fluxo_nao_interrompe_uma_publicacao_em_andamento():

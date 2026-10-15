@@ -6,9 +6,10 @@ name: Painel
 
 on:
   schedule:
-    # De 15 em 15 minutos, das 10h às 18h45 em Brasília (UTC-3, sem horário de verão), de segunda a sexta.
-    # O GitHub pode atrasar execuções agendadas (às vezes por muitos minutos); o painel avisa quando os preços estão velhos.
-    - cron: "*/15 13-21 * * 1-5"
+    # De 15 em 15 minutos, das 10h07 às 18h52 em Brasília (UTC-3, sem horário de verão), de segunda a sexta.
+    # Os minutos 7, 22, 37 e 52 são de propósito: o GitHub atrasa ou descarta execuções agendadas nos horários de pico
+    # (:00, :15, :30, :45). Mesmo assim ele pode atrasar; o painel avisa quando os preços estão velhos.
+    - cron: "7,22,37,52 13-21 * * 1-5"
   workflow_dispatch:           # botão "Run workflow" na aba Actions, para atualizar na hora
 
 permissions:

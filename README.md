@@ -39,11 +39,11 @@ Opções: `--valor` (quanto você investe por mês), `--ativos` (quantos no plan
 
 ## Abrir o painel em qualquer lugar (link na internet, atualiza sozinho)
 
-O GitHub gera o painel sozinho **de 15 em 15 minutos durante o pregão (das 10h às 18h45 de Brasília, de segunda a sexta)** e publica num link que abre em qualquer aparelho, sem o seu computador ligado. O trabalho é feito por `.github/workflows/painel.yml`.
+O GitHub gera o painel sozinho **de 15 em 15 minutos durante o pregão (das 10h07 às 18h52 de Brasília, de segunda a sexta)** e publica num link que abre em qualquer aparelho, sem o seu computador ligado. O trabalho é feito por `.github/workflows/painel.yml`.
 
 Como a atualização funciona, sem mistério:
 
-1. A cada 15 minutos o GitHub baixa os preços do Yahoo Finance, refaz as contas e publica a página junto com um arquivo de dados (`dados.json`).
+1. A cada 15 minutos (nos minutos 7, 22, 37 e 52, evitando os horários redondos, em que o GitHub costuma atrasar mais) ele baixa os preços do Yahoo Finance, refaz as contas e publica a página junto com um arquivo de dados (`dados.json`).
 2. Com a página aberta no navegador, ela **relê esse arquivo sozinha a cada minuto** e troca os preços na tela, sem você recarregar. O botão "Atualizar agora" força a busca na hora.
 3. O topo mostra "Mercado aberto" ou "Mercado fechado" e "atualizado há X min". Se o mercado estiver aberto e os preços tiverem mais de 45 minutos, aparece um aviso de **atualização atrasada**.
 
@@ -59,7 +59,7 @@ Pontos de atenção:
 
 - **Qualquer pessoa com o link vê o painel**: preços, a lista do scanner e o plano de compra (por padrão para R$ 200 por mês; cada visitante pode mudar o valor na própria página, sem afetar os outros). Ele não tem as suas posições nem dados pessoais. O código e o histórico do repositório também ficam públicos.
 - Para mudar o valor padrão do aporte, edite `--valor 200` em `.github/workflows/painel.yml`. Para pausar, use Actions > Painel > menu `...` > Disable workflow. Para tirar do ar, volte o repositório para privado.
-- Para mudar a frequência, edite a linha `cron` (por exemplo, `*/30` para de 30 em 30 minutos) e o `--intervalo-min` do comando, para o aviso de atraso acompanhar. O GitHub não aceita menos de 5 minutos.
+- Para mudar a frequência, edite a linha `cron` (por exemplo, `7,37` para de 30 em 30 minutos) e o `--intervalo-min` do comando, para o aviso de atraso acompanhar. O GitHub não aceita menos de 5 minutos. Prefira minutos que não sejam 0, 15, 30 e 45: nesses horários o GitHub atrasa ou descarta execuções agendadas.
 - Se o Yahoo Finance falhar numa execução, a página anterior continua no ar (só aparece o aviso de atraso) e a execução aparece como falha na aba Actions; o GitHub pode mandar um e-mail sobre isso.
 - Cada execução leva cerca de 1 minuto: são 36 por dia útil, bem dentro do limite gratuito de repositórios públicos.
 - O GitHub pausa execuções agendadas de repositórios sem nenhuma atividade por 60 dias. Se o painel parar de atualizar, abra a aba Actions e reative o fluxo (ou faça qualquer commit).
