@@ -2,7 +2,7 @@
 // Painel da carteira: a lógica (funções puras, testadas com o Node) vem primeiro; o desenho da página, depois.
 // As regras de escolha e de compra são as mesmas de scanner_dividendos_b3.py e carteira_simples.py.
 
-const VERSAO_PAGINA = 1;            // precisa ser igual a VERSAO_DADOS em painel_pagina.py
+const VERSAO_PAGINA = 2;            // precisa ser igual a VERSAO_DADOS em painel_pagina.py
 const FUSO_BRASILIA_MS = -3 * 3600 * 1000;   // Brasília não tem horário de verão desde 2019
 const ABERTURA_MIN = 10 * 60;       // pregão da B3: 10h às 18h, só para o "aberto/fechado" (feriados vêm dos dados)
 const FECHAMENTO_MIN = 18 * 60;
@@ -94,7 +94,12 @@ const ORDENS = {
   mes: (a) => (a.mes === null ? Infinity : -a.mes),
   ano: (a) => (a.ano === null ? Infinity : -a.ano),
   dy: (a) => (a.dy === null ? Infinity : -a.dy),
+  caida: (a) => (a.topo === null ? Infinity : a.topo),           // apostas: as mais abaixo do topo de 12 meses primeiro
+  vol: (a) => (a.oscilacao === null ? Infinity : -a.oscilacao),
+  liq: (a) => (a.liquidez === null ? Infinity : -a.liquidez),
 };
+const ORDENS_RANKING = ["nota", "dia", "mes", "ano", "dy"];
+const ORDENS_APOSTAS = ["ano", "mes", "caida", "vol", "liq"];
 
 function ordenarAtivos(lista, ordem) {
   const chave = ORDENS[ordem] || ORDENS.nota;
@@ -104,6 +109,10 @@ function ordenarAtivos(lista, ordem) {
 function filtrarAtivos(lista, { classe = "todos", busca = "", reprovados = false } = {}) {
   const q = busca.trim().toUpperCase();
   return lista.filter((a) => (reprovados || a.ok) && (classe === "todos" || a.classe === classe) && (!q || a.t.includes(q)));
+}
+
+function filtrarApostas(lista, tipo) {
+  return lista.filter((a) => tipo === "todos" || (tipo === "ação" ? a.classe === "ação" : a.classe !== "ação"));
 }
 
 function maisMenos(ativos, chave, n) {
@@ -133,7 +142,7 @@ function atrasado(estado, idade, intervaloMin) { return estado === "aberto" && i
 
 if (typeof module !== "undefined" && module.exports) {
   module.exports = { fmtNum, fmtBRL, fmtPct, fmtData, estadoMercado, horaBrasilia, escolherCandidatos, planoDeCompras,
-    estimativaDividendos, cotasQueCabem, ordenarAtivos, filtrarAtivos, maisMenos, caminhoSerie, idadeMin, atrasado, VERSAO_PAGINA };
+    estimativaDividendos, cotasQueCabem, ordenarAtivos, filtrarAtivos, filtrarApostas, maisMenos, caminhoSerie, idadeMin, atrasado, VERSAO_PAGINA };
 }
 
 // ---------- a página ----------
@@ -141,7 +150,7 @@ if (typeof module !== "undefined" && module.exports) {
 if (typeof document !== "undefined") {
   const NS_SVG = "http://www.w3.org/2000/svg";
   const CHAVE_PREFS = "carteira:preferencias";
-  const PADRAO_UI = { classe: "todos", ordem: "nota", periodo: "dia" };
+  const PADRAO_UI = { classe: "todos", ordem: "nota", periodo: "dia", tipo: "todos", ordemApostas: "ano", reserva: 10 };
   let dados = null;
   let ui = Object.assign({}, PADRAO_UI, { busca: "", reprovados: false });
   let config = null;
@@ -361,6 +370,49 @@ if (typeof document !== "undefined") {
       + fmtBRL(ano) + " por ano (" + fmtBRL(ano / 12) + " por mês). É o que aconteceu no último ano, não uma promessa: o preço também sobe e desce."));
   }
 
+  // ----- apostas -----
+
+  function desenharApostas() {
+    const todas = dados.apostas || [];
+    const reservaRS = config.valor * ui.reserva / 100;
+    const resumo = $("apostas-reserva");
+    resumo.textContent = ui.reserva > 0
+      ? "Com " + ui.reserva + "% de " + fmtBRL(config.valor) + " por mês, são " + fmtBRL(reservaRS) + " para apostas: só para calcular quantas unidades cabem, não é recomendação. O resto do aporte segue o plano de compra."
+      : "Reservando 0%, nenhum dinheiro do aporte vai para apostas.";
+    const t = limpar($("tabela-apostas"));
+    const vazio = $("apostas-vazio");
+    const lista = ordenarAtivos(filtrarApostas(todas, ui.tipo), ui.ordemApostas);
+    vazio.hidden = lista.length > 0;
+    vazio.textContent = todas.length ? "Nenhuma aposta nesse tipo." : "Não consegui baixar as apostas desta vez. Elas voltam na próxima atualização.";
+    if (!lista.length) return;
+    const limite = dados.liquidez_baixa || 1000000;
+    t.append(el("thead", null, el("tr", null,
+      el("th", null, "Ativo"), el("th", { class: "n" }, "Preço"), el("th", { class: "n" }, rotuloDia(estadoAgora().estado)), el("th", { class: "n" }, "No mês"),
+      el("th", { class: "n" }, "12 meses"), el("th", null, "Oscilação ao ano"), el("th", { class: "n" }, "Pior queda em 12 meses"),
+      el("th", null, "Preço (12 meses)"), el("th", { class: "n" }, fmtBRL(reservaRS) + " compram"))));
+    const corpo = el("tbody");
+    for (const a of lista) {
+      const cotas = reservaRS > 0 ? cotasQueCabem(reservaRS, a.preco) : 0;
+      const cabe = reservaRS <= 0 ? "n/d" : cotas === 0 ? "não cabe" : cotas + " (" + fmtBRL(cotas * a.preco) + ")";
+      const poucaLiquidez = a.liquidez !== null && a.liquidez < limite;
+      corpo.append(el("tr", null,
+        el("td", { class: "col-ativo" }, el("span", null, el("b", null, a.t), el("span", { class: "selo" }, a.classe),
+          poucaLiquidez ? el("span", { class: "selo aviso" }, "pouco negociada") : null, el("span", { class: "setor" }, a.setor))),
+        el("td", { class: "n", "data-label": "Preço" }, fmtBRL(a.preco)),
+        el("td", { class: "n", "data-label": rotuloDia(estadoAgora().estado) }, variacao(a.dia)),
+        el("td", { class: "n", "data-label": "No mês" }, variacao(a.mes)),
+        el("td", { class: "n", "data-label": "12 meses" }, variacao(a.ano)),
+        el("td", { class: "col-barra", "data-label": "Oscilação ao ano" },
+          el("span", { class: "barra risco" }, el("i", { style: "width:" + (a.oscilacao === null ? 0 : Math.min(a.oscilacao, 100)).toFixed(0) + "%" })),
+          el("small", null, a.oscilacao === null ? "histórico curto" : fmtPct(a.oscilacao))),
+        el("td", { class: "n largo", "data-label": "Pior queda em 12 meses" }, el("div", null, a.queda12 === null ? "n/d" : variacao(a.queda12),
+          a.topo === null ? null : el("small", { class: "bloco" }, a.topo > -0.05 ? "no topo do ano" : "hoje " + fmtPct(-a.topo) + " abaixo do topo"))),
+        el("td", { class: "sem-rotulo" }, sparkline(a.serie)),
+        el("td", { class: "n", "data-label": fmtBRL(reservaRS) + " compram" }, cabe)));
+    }
+    t.append(corpo);
+  }
+
   // ----- passado, corretoras, rodapé -----
 
   function desenharPassado() {
@@ -400,7 +452,7 @@ if (typeof document !== "undefined") {
   }
 
   function desenharTudo() {
-    desenharTopo(); desenharMercado(); desenharRanking(); desenharMovimento(); desenharPlano(); desenharPassado(); desenharCorretoras(); desenharRodape();
+    desenharTopo(); desenharMercado(); desenharRanking(); desenharMovimento(); desenharPlano(); desenharApostas(); desenharPassado(); desenharCorretoras(); desenharRodape();
   }
 
   // ----- atualização automática -----
@@ -434,6 +486,7 @@ if (typeof document !== "undefined") {
       desenharTopo();      // o relógio anda mesmo sem dado novo: "há X min", mercado aberto/fechado, "Hoje" ou "Último pregão"
       desenharMercado();
       desenharRanking();
+      desenharApostas();
       buscar(false);
     }, 60000);
   }
@@ -476,15 +529,23 @@ if (typeof document !== "undefined") {
     $("ordem").addEventListener("change", (e) => { ui.ordem = e.target.value; salvar(); desenharRanking(); });
     $("busca").addEventListener("input", (e) => { ui.busca = e.target.value; desenharRanking(); });
     $("reprovados").addEventListener("change", (e) => { ui.reprovados = e.target.checked; desenharRanking(); });
-    $("config").addEventListener("input", () => { lerConfig(); salvar(); desenharRanking(); desenharPlano(); });
+    $("config").addEventListener("input", () => { lerConfig(); salvar(); desenharRanking(); desenharPlano(); desenharApostas(); });
+    document.querySelectorAll("[data-tipo]").forEach((b) => b.addEventListener("click", () => {
+      ui.tipo = b.dataset.tipo; marcar("[data-tipo]", "tipo", ui.tipo); salvar(); desenharApostas();
+    }));
+    $("ordem-apostas").addEventListener("change", (e) => { ui.ordemApostas = e.target.value; salvar(); desenharApostas(); });
+    $("cfg-reserva").addEventListener("input", () => { ui.reserva = numero($("cfg-reserva"), 0, 100, ui.reserva); salvar(); desenharApostas(); });
+    $("cfg-reserva").addEventListener("change", () => { $("cfg-reserva").value = ui.reserva; });
     $("config").addEventListener("change", () => { lerConfig(); escreverConfig(); });   // ao sair do campo, mostra o valor que de fato vale
     $("config").addEventListener("submit", (e) => e.preventDefault());
-    $("cfg-padrao").addEventListener("click", () => { config = Object.assign({}, dados.config); escreverConfig(); salvar(); desenharRanking(); desenharPlano(); });
+    $("cfg-padrao").addEventListener("click", () => { config = Object.assign({}, dados.config); escreverConfig(); salvar(); desenharRanking(); desenharPlano(); desenharApostas(); });
     $("btn-atualizar").addEventListener("click", () => buscar(true));
-    document.addEventListener("visibilitychange", () => { if (!document.hidden) { desenharTopo(); desenharMercado(); desenharRanking(); buscar(false); } });
+    document.addEventListener("visibilitychange", () => { if (!document.hidden) { desenharTopo(); desenharMercado(); desenharRanking(); desenharApostas(); buscar(false); } });
   }
 
-  function salvar() { guardar(CHAVE_PREFS, { config, classe: ui.classe, ordem: ui.ordem, periodo: ui.periodo }); }
+  function salvar() {
+    guardar(CHAVE_PREFS, { config, classe: ui.classe, ordem: ui.ordem, periodo: ui.periodo, tipo: ui.tipo, ordemApostas: ui.ordemApostas, reserva: ui.reserva });
+  }
 
   function carregarPreferencias() {
     config = Object.assign({}, dados.config);
@@ -492,12 +553,18 @@ if (typeof document !== "undefined") {
     if (p && typeof p === "object") {
       if (p.config && Number.isFinite(p.config.valor)) config = Object.assign(config, p.config);
       if (["todos", "ação", "FII"].includes(p.classe)) ui.classe = p.classe;
-      if (p.ordem in ORDENS) ui.ordem = p.ordem;
+      if (ORDENS_RANKING.includes(p.ordem)) ui.ordem = p.ordem;
       if (["dia", "mes", "ano"].includes(p.periodo)) ui.periodo = p.periodo;
+      if (["todos", "ação", "fundo"].includes(p.tipo)) ui.tipo = p.tipo;
+      if (ORDENS_APOSTAS.includes(p.ordemApostas)) ui.ordemApostas = p.ordemApostas;
+      if (Number.isFinite(p.reserva) && p.reserva >= 0 && p.reserva <= 100) ui.reserva = p.reserva;
     }
     escreverConfig();
     lerConfig();
     $("ordem").value = ui.ordem;
+    $("ordem-apostas").value = ui.ordemApostas;
+    $("cfg-reserva").value = ui.reserva;
+    marcar("[data-tipo]", "tipo", ui.tipo);
     marcar("[data-classe]", "classe", ui.classe);
     marcar("[data-periodo]", "periodo", ui.periodo);
   }

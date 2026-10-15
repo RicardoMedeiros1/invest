@@ -449,7 +449,8 @@ class TickerFalso:
             if idx[k].month in (3, 6, 9, 12):
                 div[k] = close[k] * 0.06 / 4
         tr = np.cumprod(1 + np.r_[0, (np.diff(close) + div[1:]) / close[:-1]])
-        return pd.DataFrame({"Close": close, "Adj Close": tr * close[-1] / tr[-1], "Dividends": div}, index=idx)
+        volume = rng.integers(50_000, 5_000_000, len(idx))
+        return pd.DataFrame({"Close": close, "Adj Close": tr * close[-1] / tr[-1], "Dividends": div, "Volume": volume}, index=idx)
 
 
 def cdi_diario(inicio, fim, taxa_dia=0.0005):

@@ -299,7 +299,7 @@ def test_main_atualiza_a_planilha_e_o_html_e_mostra_o_painel(monkeypatch, tmp_pa
         assert secao in saida
     assert sorted(f.name for f in tmp_path.iterdir()) == ["p.html", "p.xlsx"]      # só dois arquivos, sem CSV
     abas = pd.read_excel(tmp_path / "p.xlsx", sheet_name=None)
-    assert set(abas) == {"Melhores agora", "Quanto subiu", "Plano de compra", "Passado", "Corretoras", "Todos os ativos"}
+    assert set(abas) == {"Melhores agora", "Quanto subiu", "Plano de compra", "Apostas", "Passado", "Corretoras", "Todos os ativos"}
     assert len(abas["Todos os ativos"]) == 6 and not abas["Todos os ativos"]["Ativo"].str.contains(".SA", regex=False).any()
     assert "<title>Minha carteira</title>" in (tmp_path / "p.html").read_text(encoding="utf-8")
     assert "Planilha atualizada" in saida and "Relatório atualizado" in saida
@@ -361,7 +361,7 @@ def test_scanner_e_painel_atualizam_a_mesma_planilha(monkeypatch, tmp_path):
     rodar_main(monkeypatch, tmp_path)                                               # scanner de novo, versão B
     assert sorted(f.name for f in tmp_path.iterdir()) == ["r.html", "r.xlsx"]       # continua tudo em um arquivo (mais o relatório)
     abas = pd.read_excel(tmp_path / "r.xlsx", sheet_name=None)
-    assert set(abas) == {"Melhores agora", "Quanto subiu", "Plano de compra", "Passado", "Corretoras", "Todos os ativos",
+    assert set(abas) == {"Melhores agora", "Quanto subiu", "Plano de compra", "Apostas", "Passado", "Corretoras", "Todos os ativos",
                          "Ranking", "Diagnóstico", "Comparação", "Backtest", "Operações", "Histórico"}
     assert pd.ExcelFile(tmp_path / "r.xlsx").sheet_names[0] == "Melhores agora"     # ordem combinada
 

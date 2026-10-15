@@ -25,6 +25,7 @@ import pandas as pd
 import yfinance as yf
 
 import scanner_dividendos_b3 as sc
+import apostas as ap
 import painel_pagina
 from corretoras import AVISO as AVISO_CORRETORAS, CORRETORAS, PESQUISADO_EM
 from planilha import atualizar_planilha, caminho_da_planilha
@@ -62,8 +63,11 @@ def pct(x: float, sinal: bool = False) -> str:
     return (f"{x:+.1f}" if sinal else f"{x:.1f}").replace(".", ",") + "%"
 
 
-def baixar_diario(tickers: list[str], dias: int = DIAS_DIARIOS) -> tuple[dict[str, pd.Series], dict[str, pd.Series]]:
-    """Fechamentos e dividendos diários dos últimos `dias` dias corridos. Ativo sem dados é ignorado."""
+def baixar_diario(tickers: list[str], dias: int = DIAS_DIARIOS,
+                  volumes: dict[str, pd.Series] | None = None) -> tuple[dict[str, pd.Series], dict[str, pd.Series]]:
+    """Fechamentos e dividendos diários dos últimos `dias` dias corridos. Ativo sem dados é ignorado.
+
+    Se `volumes` for um dicionário, ele é preenchido com o volume negociado (em unidades) de cada ativo."""
     inicio = (pd.Timestamp.today().normalize() - pd.Timedelta(days=dias)).strftime("%Y-%m-%d")
     fechamentos, proventos = {}, {}
     for t in tickers:
@@ -76,6 +80,8 @@ def baixar_diario(tickers: list[str], dias: int = DIAS_DIARIOS) -> tuple[dict[st
             hist.index = pd.to_datetime(hist.index).tz_localize(None)
             fechamentos[t] = hist["Close"].dropna().sort_index()
             proventos[t] = hist["Dividends"] if "Dividends" in hist else pd.Series(0.0, index=hist.index)
+            if volumes is not None and "Volume" in hist:
+                volumes[t] = hist["Volume"]
         except ImportError as exc:
             raise RuntimeError(f"Falta uma dependência do yfinance ({exc}). "
                                "Instale com: pip install -r requirements.txt") from exc
@@ -218,7 +224,7 @@ def montar_painel(tabela: pd.DataFrame, escolhidos: list[str], historico: dict[p
     }
 
 
-def abas_do_painel(p: dict, tabela: pd.DataFrame) -> dict[str, pd.DataFrame]:
+def abas_do_painel(p: dict, tabela: pd.DataFrame, lista_apostas: list[dict] | None = None) -> dict[str, pd.DataFrame]:
     """As abas que o painel grava na planilha (nomes de coluna em português, ticker sem o sufixo .SA)."""
     melhores = pd.concat([p["melhores_acoes"], p["melhores_fiis"]], ignore_index=True)
     abas = {"Melhores agora": pd.DataFrame({
@@ -238,6 +244,15 @@ def abas_do_painel(p: dict, tabela: pd.DataFrame) -> dict[str, pd.DataFrame]:
     passado += [{"Tipo": "Mês", "Período": f"{d:%Y-%m}", "Escolhidas": ", ".join(nome(t) for t in picks)}
                 for d, picks in p["passado_meses"]]
     abas["Passado"] = pd.DataFrame(passado, columns=["Tipo", "Período", "Escolhidas"])
+    if lista_apostas:   # sem dados (Yahoo fora do ar), a aba da última vez fica como estava
+        abas["Apostas"] = pd.DataFrame({
+            "Ativo": [a["t"] for a in lista_apostas], "Tipo": [a["classe"] for a in lista_apostas],
+            "Setor": [a["setor"] for a in lista_apostas], "Preço (R$)": [a["preco"] for a in lista_apostas],
+            "Último pregão (%)": [a["dia"] for a in lista_apostas], "Último mês (%)": [a["mes"] for a in lista_apostas],
+            "12 meses (%)": [a["ano"] for a in lista_apostas], "Oscilação ao ano (%)": [a["oscilacao"] for a in lista_apostas],
+            "Pior queda em 12 meses (%)": [a["queda12"] for a in lista_apostas],
+            "Distância do topo de 12 meses (%)": [a["topo"] for a in lista_apostas],
+            "Negociado por dia (R$)": [a["liquidez"] for a in lista_apostas]})
     abas["Corretoras"] = pd.DataFrame(
         [{"Corretora": c["nome"], "Corretagem": c["corretagem"], "Custódia": c["custodia"], "Atenção": c["atencao"],
           "Fonte": c["fonte"], "Pesquisado em": PESQUISADO_EM} for c in CORRETORAS])
@@ -328,6 +343,33 @@ def baixar_indices() -> list[dict]:
     return saida
 
 
+def montar_apostas(fechamentos: dict[str, pd.Series], volumes: dict[str, pd.Series]) -> list[dict]:
+    """Uma linha por aposta com preço, variações e os números de risco (ver apostas.py). Sem histórico, fica de fora."""
+    saida = []
+    for ticker, tipo, setor in ap.APOSTAS:
+        f = fechamentos.get(ticker)
+        if f is None or len(f.dropna()) < 2:
+            continue
+        v, m = variacoes(f), ap.metricas(f, volumes.get(ticker))
+        saida.append({"t": nome(ticker), "classe": tipo, "setor": setor, "preco": _numero(f.iloc[-1], 4),
+                      "dia": _numero(v["dia"], 2), "mes": _numero(v["mes"], 2), "ano": _numero(v["ano"], 2),
+                      "oscilacao": m["oscilacao"], "queda12": m["queda12"], "topo": m["topo"], "liquidez": m["liquidez"],
+                      "serie": ap.serie_do_ano(f)})
+    return saida
+
+
+def baixar_apostas() -> list[dict]:
+    """As apostas com dados de hoje. Se o Yahoo não responder, a página só fica sem essa seção."""
+    tickers = [t for t, _, _ in ap.APOSTAS if t not in sc.UNIVERSO]   # quem já está no scanner não é aposta
+    volumes: dict[str, pd.Series] = {}
+    try:
+        fechamentos, _ = baixar_diario(tickers, volumes=volumes)
+    except RuntimeError as exc:
+        print(f"[AVISO] Sem a seção de apostas: {exc}")
+        return []
+    return montar_apostas(fechamentos, volumes)
+
+
 def _numero(x, casas: int):
     """Número arredondado para o JSON; vazio (NaN) vira None."""
     return None if x is None or pd.isna(x) else round(float(x), casas)
@@ -335,7 +377,7 @@ def _numero(x, casas: int):
 
 def dados_do_painel(p: dict, tabela: pd.DataFrame, fechamentos: dict[str, pd.Series], indices: list[dict], agora: datetime,
                     config: dict, link_planilha: str | None = None, dados_url: str | None = None,
-                    intervalo_min: int = INTERVALO_PADRAO_MIN) -> dict:
+                    intervalo_min: int = INTERVALO_PADRAO_MIN, lista_apostas: list[dict] | None = None) -> dict:
     """Tudo o que a página mostra, em tipos simples (vai para o JSON). `config`: valor, ativos, fiis e meses iniciais."""
     ativos = []
     for r in tabela.itertuples():
@@ -349,6 +391,7 @@ def dados_do_painel(p: dict, tabela: pd.DataFrame, fechamentos: dict[str, pd.Ser
         "data_precos": f"{p['data']:%Y-%m-%d}", "intervalo_min": intervalo_min, "dados_url": dados_url, "planilha_url": link_planilha,
         "config": {"valor": config["valor"], "ativos": config["ativos"], "fiis": config["fiis"], "meses": config["meses"]},
         "n_aprovados": p["n_aprovados"], "n_total": p["n_total"], "indices": indices, "ativos": ativos,
+        "apostas": lista_apostas or [], "liquidez_baixa": ap.LIQUIDEZ_BAIXA,
         "passado": {"anos": [{"ano": ano, "meses": d["meses"], "top": [[nome(t), n] for t, n in d["top"]]} for ano, d in p["passado_anos"].items()],
                     "meses": [{"mes": f"{d:%Y-%m}", "escolhidas": [nome(t) for t in picks]} for d, picks in p["passado_meses"]]},
         "corretoras": {"pesquisado_em": PESQUISADO_EM, "aviso": AVISO_CORRETORAS,
@@ -398,6 +441,7 @@ def main() -> None:
     agora = datetime.now(BRASILIA)
     fechamentos, proventos = baixar_diario(list(raw.columns))
     indices = baixar_indices()
+    lista_apostas = baixar_apostas()
     tabela = montar_tabela(fechamentos, proventos, ranking_geral, args.valor)
     escolhidos = sc.escolher_candidatos(ranking_geral["ticker"].tolist(), args.ativos, args.fiis)
     historico = escolhidas_por_mes(raw, adj, sinais, args.ativos, args.fiis)
@@ -410,7 +454,7 @@ def main() -> None:
     arquivo_html.parent.mkdir(parents=True, exist_ok=True)
     dados = dados_do_painel(painel, tabela, fechamentos, indices, agora,
                             {"valor": args.valor, "ativos": args.ativos, "fiis": args.fiis, "meses": args.meses},
-                            args.link_planilha, args.dados_json, args.intervalo_min)
+                            args.link_planilha, args.dados_json, args.intervalo_min, lista_apostas)
     arquivo_html.write_text(painel_pagina.pagina_html(dados), encoding="utf-8")
     print(f"\nRelatório atualizado: {arquivo_html}")
     if args.dados_json:
@@ -422,7 +466,7 @@ def main() -> None:
         except Exception:
             print("Não consegui abrir o navegador; abra o arquivo .html com um duplo clique.")
     # A planilha vem por último: se ela estiver aberta no Excel, o relatório acima já foi gerado.
-    atualizar_planilha(planilha, abas_do_painel(painel, tabela))
+    atualizar_planilha(planilha, abas_do_painel(painel, tabela, lista_apostas))
     print(f"Planilha atualizada: {planilha} (é sempre o mesmo arquivo; feche-o no Excel antes de rodar de novo).")
 
 

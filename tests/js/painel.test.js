@@ -146,3 +146,22 @@ test("paridade com o Python", { skip: !process.env.CASOS_PARIDADE && "sem CASOS_
   for (const c of casos.brl) assert.equal(p.fmtBRL(c.x), c.esperado);
   for (const c of casos.pct) assert.equal(p.fmtPct(c.x, c.sinal), c.esperado);
 });
+
+const apostas = [
+  { t: "AAA3", classe: "ação", ano: 80, mes: -5, topo: -40, oscilacao: 60, liquidez: 5e6 },
+  { t: "BBB11", classe: "ETF", ano: 20, mes: 10, topo: -2, oscilacao: 25, liquidez: null },
+  { t: "CCC3", classe: "ação", ano: null, mes: 3, topo: null, oscilacao: null, liquidez: 2e5 },
+  { t: "DDD11", classe: "FII", ano: 5, mes: 1, topo: -10, oscilacao: 8, liquidez: 9e6 },
+];
+
+test("apostas: filtro por tipo (ETFs e FIIs contam como fundos) e ordem com o que falta por último", () => {
+  assert.deepEqual(p.filtrarApostas(apostas, "todos").length, 4);
+  assert.deepEqual(p.filtrarApostas(apostas, "ação").map((a) => a.t), ["AAA3", "CCC3"]);
+  assert.deepEqual(p.filtrarApostas(apostas, "fundo").map((a) => a.t), ["BBB11", "DDD11"]);
+  const ord = (o) => p.ordenarAtivos(apostas, o).map((a) => a.t);
+  assert.deepEqual(ord("ano"), ["AAA3", "BBB11", "DDD11", "CCC3"]);       // sem dado por último
+  assert.deepEqual(ord("mes"), ["BBB11", "CCC3", "DDD11", "AAA3"]);
+  assert.deepEqual(ord("caida"), ["AAA3", "DDD11", "BBB11", "CCC3"]);     // as mais abaixo do topo primeiro
+  assert.deepEqual(ord("vol"), ["AAA3", "BBB11", "DDD11", "CCC3"]);
+  assert.deepEqual(ord("liq"), ["DDD11", "AAA3", "CCC3", "BBB11"]);
+});

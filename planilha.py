@@ -15,7 +15,7 @@ from openpyxl.utils import get_column_letter
 
 ABA_HISTORICO = "Histórico"
 # Ordem das abas: primeiro as do painel simples, depois as do scanner completo.
-ORDEM_ABAS = ["Melhores agora", "Quanto subiu", "Plano de compra", "Passado", "Corretoras", "Todos os ativos",
+ORDEM_ABAS = ["Melhores agora", "Quanto subiu", "Plano de compra", "Apostas", "Passado", "Corretoras", "Todos os ativos",
               "Ranking", "Diagnóstico", "Comparação", "Backtest", "Operações", ABA_HISTORICO]
 
 

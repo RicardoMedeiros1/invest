@@ -23,7 +23,7 @@ __CSS__
     </div>
     <nav class="nav" aria-label="Seções">
       <a href="#mercado">Mercado</a><a href="#ranking">Ranking</a><a href="#movimento">Movimento</a>
-      <a href="#plano">Plano de compra</a><a href="#passado">Passado</a><a href="#corretoras">Corretoras</a>
+      <a href="#plano">Plano de compra</a><a href="#apostas">Apostas</a><a href="#passado">Passado</a><a href="#corretoras">Corretoras</a>
     </nav>
   </div>
 </header>
@@ -72,6 +72,37 @@ __CSS__
       <button id="cfg-padrao" type="button" class="botao">Voltar ao padrão</button>
     </form>
     <div id="plano-saida"></div>
+  </section>
+
+  <section id="apostas" aria-labelledby="t-apostas">
+    <h2 id="t-apostas">Apostas</h2>
+    <p class="sub">Ações e fundos em que o preço balança muito. Podem subir bastante ou cair bastante, e ninguém sabe qual dos dois.</p>
+    <div class="aviso-risco" role="note">
+      <b>Leia antes.</b> Tudo abaixo é o que <b>já aconteceu</b>; nenhum número desta página diz o que vai acontecer. Estar em alta não garante que
+      vai continuar subindo, e ter caído muito não garante que vai voltar. Estes ativos <b>não passam pelo filtro de dividendos</b> do scanner e
+      <b>não entram no plano de compra</b>. Regra de bolso comum: só dinheiro que você aceita perder, em uma parte pequena do aporte.
+      Não é recomendação de compra.
+    </div>
+    <div class="controles">
+      <div class="grupo" role="group" aria-label="Tipo de aposta">
+        <button type="button" class="chip" data-tipo="todos" aria-pressed="true">Todas</button>
+        <button type="button" class="chip" data-tipo="ação" aria-pressed="false">Ações</button>
+        <button type="button" class="chip" data-tipo="fundo" aria-pressed="false">ETFs e fundos</button>
+      </div>
+      <label class="campo">Ordenar por
+        <select id="ordem-apostas">
+          <option value="ano">Mais fortes em 12 meses</option><option value="mes">Mais fortes no mês</option>
+          <option value="caida">Mais abaixo do topo (caíram mais)</option><option value="vol">Mais oscilantes</option>
+          <option value="liq">Mais negociadas</option>
+        </select>
+      </label>
+      <label class="campo">Quanto do aporte você arriscaria (%)<input id="cfg-reserva" type="number" min="0" max="100" step="5" inputmode="numeric"></label>
+    </div>
+    <p id="apostas-reserva" class="nota"></p>
+    <div class="painel rolagem"><table class="tabela empilha" id="tabela-apostas"></table></div>
+    <p id="apostas-vazio" class="nota" hidden></p>
+    <p class="nota"><b>Oscilação:</b> quanto o preço costuma balançar em um ano (quanto maior, mais arriscado). <b>Pior queda:</b> o maior tombo, do topo ao fundo, nos últimos 12 meses.
+      <b>Pouco negociada:</b> menos de R$ 1 milhão por dia, e pode ser difícil vender pelo preço que você viu. O ETF acompanha uma carteira ou um índice; o preço dele também cai.</p>
   </section>
 
   <section id="passado" aria-labelledby="t-passado">
