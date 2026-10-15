@@ -50,6 +50,7 @@ Pontos de atenção:
 - **Qualquer pessoa com o link vê o painel**: preços, a lista do scanner e o plano de compra para R$ 200 por mês. Ele não tem as suas posições nem dados pessoais. O código e o histórico do repositório também ficam públicos.
 - Para mudar o valor do aporte, edite `--valor 200` em `.github/workflows/painel.yml`. Para pausar, use Actions > Painel > menu `...` > Disable workflow. Para tirar do ar, volte o repositório para privado.
 - Se o Yahoo Finance falhar num dia, o painel do dia anterior continua no ar e a execução aparece como falha na aba Actions.
+- O GitHub pausa execuções agendadas de repositórios sem nenhuma atividade por 60 dias. Se o painel parar de atualizar, abra a aba Actions e reative o fluxo (ou faça qualquer commit).
 - Só o painel simples é publicado. O scanner completo (backtest e benchmarks) continua rodando no seu computador, com a planilha local.
 
 ## Uso do scanner completo

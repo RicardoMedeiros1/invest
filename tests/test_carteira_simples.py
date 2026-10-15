@@ -221,6 +221,7 @@ def test_texto_do_painel_traz_as_secoes_e_o_plano_em_reais():
         assert secao in texto
     assert "Mês 1: 1 PETR4 + 2 CXSE3 + 2 ABEV3 + 1 WEGE3 + 1 ISAE4  =  R$ 196,65  (sobra R$ 3,35)" in texto
     assert "cerca de R$ 168,00 por ano (R$ 14,00 por mês)" in texto and "não uma promessa" in texto
+    assert "Usa os preços de hoje nos 2 meses. O gasto de um mês pode passar de R$ 200,00 porque inclui a sobra" in texto
     assert "R$ 200,00 compram: 4 (R$ 196,48)" in texto                                # PETR4 a R$ 49,12
     assert ".SA" not in texto and "2026-09:" in texto and "Nubank" in texto
 
@@ -231,6 +232,7 @@ def test_html_do_painel_e_autonomo_e_nao_mostra_o_sufixo_do_yahoo():
         assert f"<h2>{titulo}</h2>" in pagina
     assert pagina.startswith("<!doctype html>") and "<script" not in pagina and "http" in pagina   # links das fontes
     assert ".SA" not in pagina and "PETR4" in pagina and "R$ 196,65" in pagina
+    assert "pode passar de R$ 200,00 porque inclui a sobra dos meses anteriores" in pagina
 
 
 def test_html_escapa_textos_de_fora(monkeypatch):

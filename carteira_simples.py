@@ -283,6 +283,8 @@ def texto_painel(p: dict) -> str:
         for m in p["plano"]:
             compra = _compras_texto(m["compras"]) if m["compras"] else "nenhuma compra (guarda o caixa)"
             L.append(f"  Mês {m['mes']}: {compra}  =  {brl(m['gasto'])}  (sobra {brl(m['sobra'])})")
+        L.append(f"Usa os preços de hoje nos {p['meses']} meses. O gasto de um mês pode passar de {brl(p['valor'])} "
+                 "porque inclui a sobra dos meses anteriores.")
         e = p["estimativa"]
         L.append(f"Quanto pode render: se você investir {brl(e['total'])} em 12 meses nesses ativos e eles pagarem o mesmo "
                  f"dividendo do último ano, são cerca de {brl(e['dividendos_ano'])} por ano ({brl(e['dividendos_mes'])} por mês).")
@@ -374,7 +376,8 @@ def html_painel(p: dict, link_planilha: str | None = None) -> str:
             f"<tr><td>Mês {m['mes']}</td><td>{esc(_compras_texto(m['compras'])) if m['compras'] else 'nenhuma compra (guarda o caixa)'}</td>"
             f"<td class='n'>{brl(m['gasto'])}</td><td class='n'>{brl(m['sobra'])}</td></tr>" for m in p["plano"])
         partes.append(f"<h2>Plano dos primeiros {p['meses']} meses</h2><p class='sub'>{brl(p['valor'])} por mês, só unidades inteiras. "
-                      "O plano reforça sempre o ativo com menos dinheiro aplicado; se ele ainda não cabe, guarda o caixa para o mês seguinte.</p>"
+                      "O plano reforça sempre o ativo com menos dinheiro aplicado; se ele ainda não cabe, guarda o caixa para o mês seguinte. "
+                      f"Usa os preços de hoje nos {p['meses']} meses, e o gasto de um mês pode passar de {brl(p['valor'])} porque inclui a sobra dos meses anteriores.</p>"
                       "<div class='panel'><p>Ativos: " + "".join(f"<span class='chip'>{esc(nome(t))}</span>" for t in p["ordem"]) + "</p>"
                       "<table><tr><th>Quando</th><th>Comprar</th><th class='n'>Gasto</th><th class='n'>Sobra</th></tr>" + linhas + "</table>"
                       f"<p class='nota'><b>Quanto pode render:</b> se você investir {brl(e['total'])} em 12 meses nesses ativos e eles pagarem o "
