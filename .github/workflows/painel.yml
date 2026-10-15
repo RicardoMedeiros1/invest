@@ -1,0 +1,44 @@
+# Gera o painel (carteira_simples.py) todo dia útil e publica no GitHub Pages.
+# Para ligar: Settings > Pages > Build and deployment > Source: "GitHub Actions" (o repositório precisa ser público
+# ou a conta ter GitHub Pro). O endereço aparece no fim da execução, na aba Actions.
+name: Painel
+
+on:
+  schedule:
+    - cron: "30 21 * * 1-5"   # 18h30 em Brasília (UTC-3), de segunda a sexta, depois do fechamento da B3
+  workflow_dispatch:           # botão "Run workflow" na aba Actions, para atualizar na hora
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: painel
+  cancel-in-progress: true
+
+jobs:
+  construir:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Gerar o painel
+        run: python carteira_simples.py --valor 200 --sem-abrir --saida site/index --link-planilha index.xlsx
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  publicar:
+    needs: construir
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

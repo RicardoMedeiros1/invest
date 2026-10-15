@@ -35,6 +35,23 @@ Abre no navegador um relatório (e mostra o mesmo no terminal) com:
 
 Opções: `--valor` (quanto você investe por mês), `--ativos` (quantos no plano, padrão 5), `--fiis` (quantos deles são FIIs, padrão 0), `--meses` (meses do plano, padrão 3), `--sem-abrir` (não abre o navegador). Atualiza a planilha `carteira.xlsx` (veja "Uma só planilha" abaixo) e o relatório `carteira.html`, sempre com esses mesmos nomes. Usa o mesmo filtro do scanner, então os dois sempre concordam sobre quem está aprovado. Os preços diários vêm do Yahoo Finance e podem ter alguns minutos de atraso: confira a cotação no aplicativo da corretora antes de comprar.
 
+## Abrir o painel em qualquer lugar (link na internet)
+
+O GitHub gera o painel sozinho **todo dia útil às 18h30 (Brasília)**, depois do fechamento da bolsa, e publica num link que abre em qualquer aparelho, sem o seu computador ligado. A página tem um botão para baixar a planilha. O trabalho é feito por `.github/workflows/painel.yml`.
+
+Para ligar, uma única vez, no site do GitHub:
+
+1. **Torne o repositório público**: Settings > General > Danger Zone > Change visibility. (O GitHub Pages não funciona com repositório privado na conta gratuita; quem tem GitHub Pro não precisa disso.)
+2. **Ative o Pages**: Settings > Pages > Build and deployment > Source: **GitHub Actions**.
+3. **Gere a primeira vez**: aba Actions > Painel > Run workflow. Ao terminar, o endereço aparece em Settings > Pages (costuma ser `https://ricardomedeiros1.github.io/invest/`).
+
+Pontos de atenção:
+
+- **Qualquer pessoa com o link vê o painel**: preços, a lista do scanner e o plano de compra para R$ 200 por mês. Ele não tem as suas posições nem dados pessoais. O código e o histórico do repositório também ficam públicos.
+- Para mudar o valor do aporte, edite `--valor 200` em `.github/workflows/painel.yml`. Para pausar, use Actions > Painel > menu `...` > Disable workflow. Para tirar do ar, volte o repositório para privado.
+- Se o Yahoo Finance falhar num dia, o painel do dia anterior continua no ar e a execução aparece como falha na aba Actions.
+- Só o painel simples é publicado. O scanner completo (backtest e benchmarks) continua rodando no seu computador, com a planilha local.
+
 ## Uso do scanner completo
 
 ```powershell

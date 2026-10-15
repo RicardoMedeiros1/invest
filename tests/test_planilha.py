@@ -118,3 +118,9 @@ def test_arquivo_danificado_gera_mensagem_clara(tmp_path):
     with pytest.raises(SystemExit, match="danificado"):
         pl.atualizar_planilha(caminho, {"Ranking": df(a=[1])}, historico={"x": 1})
     assert caminho.read_bytes() == b"isto nao e uma planilha"                                # não apaga nada sem avisar
+
+
+def test_cria_a_pasta_de_destino_quando_ela_nao_existe(tmp_path):
+    caminho = tmp_path / "site" / "novo" / "carteira.xlsx"                                  # nenhuma das pastas existe
+    pl.atualizar_planilha(caminho, {"Ranking": df(a=[1])}, historico={"x": 1})
+    assert caminho.exists() and ler(caminho)["Ranking"].a.tolist() == [1]

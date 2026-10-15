@@ -60,6 +60,7 @@ def atualizar_planilha(caminho: Path, abas: dict[str, pd.DataFrame], historico: 
     uma mensagem em português.
     """
     caminho = Path(caminho)
+    caminho.parent.mkdir(parents=True, exist_ok=True)
     abas = dict(abas)
     modo = "a" if caminho.exists() else "w"
     try:

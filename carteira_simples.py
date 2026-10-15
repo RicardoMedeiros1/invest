@@ -354,12 +354,13 @@ def _bloco_periodo(titulo: str, df: pd.DataFrame, coluna: str) -> str:
     return f"<div><h3>{html.escape(titulo)}</h3><table>" + "".join(linhas) + "</table></div>"
 
 
-def html_painel(p: dict) -> str:
-    """O painel como página HTML autônoma (sem internet, sem scripts)."""
+def html_painel(p: dict, link_planilha: str | None = None) -> str:
+    """O painel como página HTML autônoma (sem scripts). Com `link_planilha`, mostra um link para baixar a planilha."""
     esc = html.escape
     e = p["estimativa"]
+    baixar = (f" <a href='{esc(link_planilha)}'>Baixar a planilha (Excel)</a>." if link_planilha else "")
     partes = [f"<h1>Sua carteira em poucos passos</h1><p class='sub'>Preços de {p['data']:%d/%m/%Y}. "
-              f"{p['n_aprovados']} de {p['n_total']} ativos passaram nos filtros do scanner.</p>"]
+              f"{p['n_aprovados']} de {p['n_total']} ativos passaram nos filtros do scanner.{baixar}</p>"]
     partes.append("<h2>As melhores agora</h2><p class='sub'>Na ordem da nota do scanner (dividendos, regularidade e preço no último ano). "
                   "A barra mostra quanto cada um pagou de dividendos em 12 meses, em % do preço.</p>"
                   "<div class='panel'><h3>Ações</h3>" + _tabela_melhores(p["melhores_acoes"], p["valor"])
@@ -398,7 +399,7 @@ def html_painel(p: dict) -> str:
             f"<title>Sua carteira em poucos passos</title><style>{_CSS}</style></head><body><main>" + "".join(partes) + "</main></body></html>")
 
 
-def main() -> None:
+def criar_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Painel simples: as melhores agora, quanto subiram, plano de compra e custos.")
     parser.add_argument("--valor", type=float, default=sc.APORTE_PADRAO, help="Quanto você investe por mês, em reais (padrão: 200).")
     parser.add_argument("--ativos", type=int, default=sc.TOP_PADRAO, help="Quantos ativos no plano de compra (padrão: 5).")
@@ -408,7 +409,13 @@ def main() -> None:
     parser.add_argument("--saida", default="carteira",
                         help="Nome da planilha (.xlsx) e do relatório (.html), sem extensão (padrão: carteira). Sempre os mesmos arquivos.")
     parser.add_argument("--sem-abrir", action="store_true", help="Não abre o relatório no navegador.")
-    args = parser.parse_args()
+    parser.add_argument("--link-planilha", default=None,
+                        help="Endereço da planilha para o link 'Baixar a planilha' no relatório (usado ao publicar na internet).")
+    return parser
+
+
+def main() -> None:
+    args = criar_parser().parse_args()
     if args.valor <= 0 or args.ativos < 1 or args.meses < 1 or args.anos < 4:
         raise SystemExit("Use --valor > 0, --ativos >= 1, --meses >= 1 e --anos >= 4.")
     if not 0 <= args.fiis <= args.ativos:
@@ -431,7 +438,8 @@ def main() -> None:
     print("\n" + texto_painel(painel))
     planilha = caminho_da_planilha(args.saida)
     arquivo_html = planilha.with_suffix(".html")
-    arquivo_html.write_text(html_painel(painel), encoding="utf-8")
+    arquivo_html.parent.mkdir(parents=True, exist_ok=True)
+    arquivo_html.write_text(html_painel(painel, args.link_planilha), encoding="utf-8")
     print(f"\nRelatório atualizado: {arquivo_html}")
     if not args.sem_abrir:
         try:
