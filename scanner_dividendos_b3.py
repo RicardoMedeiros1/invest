@@ -37,6 +37,7 @@ CLASSE = {**{t: "ACAO" for t in ACOES}, **{t: "FII" for t in FIIS}}
 
 APORTE_PADRAO = 200.0
 TOP_PADRAO = 5
+FRACAO_FIIS_PADRAO = 0.4   # parte das vagas (--top) reservada a FIIs: 2 de 5; o restante é de ações
 CUSTO_TRADE = 0.0015       # estimativa de 0,15% sobre o valor negociado; altere conforme sua corretora
 YIELD_MINIMO = 0.03        # 3% trailing 12 meses; filtro, não meta de retorno
 YIELD_MAXIMO = 0.18        # acima disso exige cautela: pode ser evento não recorrente ou queda forte
@@ -185,6 +186,67 @@ def selecionar(raw: pd.DataFrame, adj: pd.DataFrame,
     return pd.DataFrame(rows).sort_values("score", ascending=False).head(top_n).reset_index(drop=True)
 
 
+def escolher_candidatos(ranking: list[str], top_n: int, n_fiis: int | None) -> list[str]:
+    """Quem recebe aporte: os top_n do ranking geral, ou com cota por classe.
+
+    Com n_fiis, reserva essa quantidade de vagas para FIIs e as demais (top_n - n_fiis) para ações,
+    cada classe pelo seu melhor ranqueamento. Vaga que uma classe não consegue preencher (poucos
+    aprovados) vai para o próximo melhor do ranking geral. Devolve na ordem do ranking.
+    """
+    if n_fiis is None:
+        return ranking[:top_n]
+    fiis = [t for t in ranking if CLASSE.get(t, "ACAO") == "FII"]
+    acoes = [t for t in ranking if CLASSE.get(t, "ACAO") != "FII"]
+    escolhidos = acoes[:top_n - n_fiis] + fiis[:n_fiis]
+    sobra = [t for t in ranking if t not in escolhidos]
+    escolhidos += sobra[:top_n - len(escolhidos)]
+    return sorted(escolhidos, key=ranking.index)
+
+
+def tabela_ranking(ranking_geral: pd.DataFrame, escolhidos: list[str], n_ranking: int) -> pd.DataFrame:
+    """Ranking para exibir: posição, classe e marca dos escolhidos. Mostra os n_ranking primeiros e
+    também os escolhidos que ficaram mais abaixo (FIIs, pela cota)."""
+    tabela = ranking_geral.assign(
+        posicao=range(1, len(ranking_geral) + 1),
+        classe=ranking_geral["ticker"].map(lambda t: "FII" if CLASSE.get(t, "ACAO") == "FII" else "ação"),
+        escolhido_hoje=ranking_geral["ticker"].map(lambda t: "sim" if t in escolhidos else ""))
+    tabela = tabela[(tabela["posicao"] <= n_ranking) | tabela["ticker"].isin(escolhidos)]
+    return tabela[["posicao", "ticker", "classe", "escolhido_hoje"] + COLUNAS_RANKING[1:]].reset_index(drop=True)
+
+
+def misto_por_cota(top_n: int, n_fiis: int) -> dict[str, dict[str, float]]:
+    """Benchmark misto com o mesmo peso das vagas: bolsa para as de ações, IFIX para as de FIIs.
+
+    Vazio quando a carteira seria só de um tipo (o misto repetiria o IBOV ou o IFIX).
+    """
+    if not 0 < n_fiis < top_n:
+        return {}
+    pesos = {"IBOV (BOVA11)": (top_n - n_fiis) / top_n, "IFIX (XFIX11)": n_fiis / top_n}
+    pct_bolsa = round(pesos["IBOV (BOVA11)"] * 100)
+    return {f"Misto {pct_bolsa}/{100 - pct_bolsa} (IBOV+IFIX)": pesos}
+
+
+def formatar_escolhidos(escolhidos: list[str], posicao: dict[str, int], aporte: float,
+                        top_n: int, n_fiis: int | None) -> list[str]:
+    """Linhas do terminal: quem o scanner escolhe hoje e como o aporte seria dividido."""
+    n_acoes = sum(CLASSE.get(t, "ACAO") != "FII" for t in escolhidos)
+    n_fii = len(escolhidos) - n_acoes
+    regra = (f"{top_n - n_fiis} ações + {n_fiis} FIIs" if n_fiis is not None
+             else f"os {top_n} melhores do ranking geral")
+    linhas = [f"=== ESCOLHIDOS PARA O PRÓXIMO APORTE ({regra}; resultado dos filtros, não recomendação) ==="]
+    divisao = alocar_aporte(aporte, escolhidos, {})
+    for t in escolhidos:
+        tipo = "FII" if CLASSE.get(t, "ACAO") == "FII" else "ação"
+        linhas.append(f"  {t:<10} {tipo:<5} #{posicao[t]} no ranking geral   R$ {divisao.get(t, 0.0):,.2f}")
+    sobra = aporte - sum(divisao.values())
+    if sobra > 0.005:
+        linhas.append(f"  Sobra em caixa pelos limites de peso: R$ {sobra:,.2f}")
+    if n_fiis is not None and (n_fii, n_acoes) != (n_fiis, top_n - n_fiis):
+        linhas.append(f"  Atenção: só passaram nos filtros {n_acoes} ações e {n_fii} FIIs; as vagas "
+                      f"que faltavam foram para o melhor do ranking geral.")
+    return linhas
+
+
 COLUNAS_DIAGNOSTICO = ["ticker", "classe", "situacao", "posicao_ranking", "score", "motivo", "dy_12m_pct",
                        "anos_com_div_ult_3", "proventos_vs_12m_anteriores_pct", "retorno_preco_12m_pct",
                        "meses_de_historico"]
@@ -288,16 +350,17 @@ def alocar_aporte(caixa: float, candidatos: list[str],
 
 
 def backtest(raw: pd.DataFrame, adj: pd.DataFrame, div: pd.DataFrame,
-             aporte: float, top_n: int) -> tuple[pd.DataFrame, pd.DataFrame]:
+             aporte: float, top_n: int, cota_fiis: int | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Backtest mensal sem look-ahead, com caixa e custo estimado nas negociações.
 
     O preço ajustado é usado como índice de retorno total (proventos reinvestidos
     matematicamente). As unidades são sintéticas; não equivalem à quantidade real
     de ações/cotas negociáveis, especialmente para FIIs.
 
-    Regras: só os top_n do ranking recebem aportes (respeitando os limites de peso, ver
-    alocar_aporte); só se vende um ativo que deixou de passar nos filtros; ativo sem cotação
-    no mês é avaliado/liquidado pelo último preço conhecido.
+    Regras: recebem aportes os top_n do ranking geral ou, com cota_fiis, as vagas por classe
+    (top_n - cota_fiis ações e cota_fiis FIIs; ver escolher_candidatos), respeitando os limites de
+    peso (ver alocar_aporte); só se vende um ativo que deixou de passar nos filtros; ativo sem
+    cotação no mês é avaliado/liquidado pelo último preço conhecido.
     """
     sinais = metricas_historicas(raw, div)
     datas = adj.index.intersection(raw.index).sort_values()
@@ -316,7 +379,7 @@ def backtest(raw: pd.DataFrame, adj: pd.DataFrame, div: pd.DataFrame,
         sinal_dt = datas[i - 1]  # decisão baseada apenas no último mês fechado
         # Ranking completo dos ativos que passam nos filtros; só os top_n recebem aporte.
         elegiveis = selecionar(raw, adj, sinais, sinal_dt, len(raw.columns))["ticker"].tolist()
-        candidatos = elegiveis[:top_n]
+        candidatos = escolher_candidatos(elegiveis, top_n, cota_fiis)
         precos_hoje = adj.loc[dt]
         ref_hoje = precos_ref.loc[dt]
 
@@ -505,8 +568,8 @@ def resumir(curva: pd.DataFrame, series: dict[str, pd.Series],
     return resumo
 
 
-def avaliar_benchmarks(curva: pd.DataFrame, inicio: str,
-                       usar_benchmarks: bool = True) -> tuple[pd.DataFrame, pd.DataFrame]:
+def avaliar_benchmarks(curva: pd.DataFrame, inicio: str, usar_benchmarks: bool = True,
+                       mistos: dict[str, dict[str, float]] | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Acrescenta à curva o patrimônio de cada benchmark e devolve também o resumo com XIRR.
 
     Falhas de download (CDI ou ETFs) geram aviso e o benchmark é ignorado; o XIRR da
@@ -547,7 +610,7 @@ def avaliar_benchmarks(curva: pd.DataFrame, inicio: str,
                     print(f"[AVISO] {nome}: histórico não cobre todo o período do backtest{desde}; ignorado.")
                 else:
                     series[nome] = valores
-        for nome, pesos in BENCHMARKS_MISTOS.items():
+        for nome, pesos in (BENCHMARKS_MISTOS if mistos is None else mistos).items():
             if not np.isclose(sum(pesos.values()), 1.0):
                 raise ValueError(f"Os pesos de '{nome}' em BENCHMARKS_MISTOS devem somar 1.")
             faltam = [c for c in pesos if c not in series]
@@ -570,12 +633,21 @@ def main() -> None:
     parser.add_argument("--anos", type=int, default=8, help="Anos de histórico para baixar (padrão: 8).")
     parser.add_argument("--aporte", type=float, default=APORTE_PADRAO, help="Aporte mensal em reais (padrão: 200).")
     parser.add_argument("--top", type=int, default=TOP_PADRAO, help="Máximo de ativos por mês (padrão: 5).")
+    parser.add_argument("--fiis", type=int, default=None,
+                        help="Vagas reservadas a FIIs entre os --top; as demais são de ações "
+                             "(padrão: 40%% das vagas, 2 de 5).")
+    parser.add_argument("--sem-cota", action="store_true",
+                        help="Escolhe os --top melhores do ranking geral, sem reservar vagas por classe.")
     parser.add_argument("--saida", default="resultado_dividendos", help="Prefixo dos arquivos de saída.")
     parser.add_argument("--sem-benchmark", action="store_true",
                         help="Não baixa CDI nem ETFs de referência; calcula só o XIRR da estratégia.")
     args = parser.parse_args()
     if args.anos < 4 or args.aporte <= 0 or args.top < 1:
         raise SystemExit("Use --anos >= 4, --aporte > 0 e --top >= 1.")
+    n_fiis = None if args.sem_cota else (
+        args.fiis if args.fiis is not None else int(args.top * FRACAO_FIIS_PADRAO + 0.5))
+    if n_fiis is not None and not 0 <= n_fiis <= args.top:
+        raise SystemExit("Use --fiis entre 0 e o valor de --top.")
 
     inicio = (pd.Timestamp.today().normalize() - pd.DateOffset(years=args.anos)).strftime("%Y-%m-%d")
     print(f"Baixando histórico desde {inicio}. A lista de ativos está no início do arquivo.")
@@ -586,15 +658,21 @@ def main() -> None:
     # Scanner atual: ranking com o último mês fechado, não com dado parcial do mês corrente.
     sinal_atual = datas[-2] if len(datas) > 1 else data_atual
     n_ranking = max(args.top * 3, 10)
-    ranking = selecionar(raw, adj, sinais, sinal_atual, n_ranking)
+    ranking_geral = selecionar(raw, adj, sinais, sinal_atual, len(raw.columns))
+    ordem = ranking_geral["ticker"].tolist()
+    escolhidos = escolher_candidatos(ordem, args.top, n_fiis)
+    posicao = {t: i + 1 for i, t in enumerate(ordem)}
+    ranking = tabela_ranking(ranking_geral, escolhidos, n_ranking)
     ranking.to_csv(f"{args.saida}_ranking.csv", index=False, encoding="utf-8-sig")
     diagnostico = diagnosticar(raw, adj, sinais, sinal_atual, UNIVERSO)
     diagnostico.to_csv(f"{args.saida}_diagnostico.csv", index=False, encoding="utf-8-sig")
 
-    curva, operacoes = backtest(raw, adj, div, args.aporte, args.top)
+    curva, operacoes = backtest(raw, adj, div, args.aporte, args.top, cota_fiis=n_fiis)
+    # Com cota por classe, o benchmark misto tem o mesmo peso das vagas (ex.: 3 de 5 = 60% bolsa).
+    mistos = None if n_fiis is None else misto_por_cota(args.top, n_fiis)
     resumo = pd.DataFrame()
     if not curva.empty:
-        curva, resumo = avaliar_benchmarks(curva, inicio, usar_benchmarks=not args.sem_benchmark)
+        curva, resumo = avaliar_benchmarks(curva, inicio, usar_benchmarks=not args.sem_benchmark, mistos=mistos)
     curva.to_csv(f"{args.saida}_backtest.csv", index=False, encoding="utf-8-sig")
     operacoes.to_csv(f"{args.saida}_operacoes.csv", index=False, encoding="utf-8-sig")
     resumo.to_csv(f"{args.saida}_comparacao.csv", index=False, encoding="utf-8-sig")
@@ -629,8 +707,12 @@ def main() -> None:
                   f"  (caixa: {mix['caixa_final_pct']:.1f}% do patrimônio)")
             print(f"Média mensal:    ações {mix['acoes_media_pct']:.1f}% | FIIs {mix['fiis_media_pct']:.1f}%")
             print(f"Peso de FIIs no período: de {mix['fiis_min_pct']:.1f}% a {mix['fiis_max_pct']:.1f}%")
-            print("Compare com os pesos do benchmark misto (BENCHMARKS_MISTOS); se a proporção for bem diferente, "
-                  "o misto é uma referência fraca.")
+            usados = list(BENCHMARKS_MISTOS if mistos is None else mistos)
+            alvo = ", ".join(usados) if usados else "o IBOV e o IFIX separadamente"
+            print(f"Compare com {alvo}; se a proporção for bem diferente, o misto é uma referência fraca.")
+    if escolhidos:
+        print()
+        print("\n".join(formatar_escolhidos(escolhidos, posicao, args.aporte, args.top, n_fiis)))
     print("\n=== RANKING ATUAL (sinal do último mês fechado) ===")
     if ranking.empty:
         print("Nenhum ativo passou nos filtros. Não relaxe os filtros sem revisar a qualidade dos dados.")

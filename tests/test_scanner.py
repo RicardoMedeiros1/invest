@@ -316,6 +316,123 @@ def test_formatar_diagnostico_sem_excluidos():
     assert "Nenhum ativo foi excluído." in sc.formatar_diagnostico(diag, raw.index[-1], 10)
 
 
+# ---------- cota por classe: ações x FIIs ----------
+
+RANK_MISTO = ["PETR4.SA", "HGLG11.SA", "VALE3.SA", "KNRI11.SA", "ITUB4.SA", "ABEV3.SA", "XPLG11.SA"]
+
+
+def test_sem_cota_vale_o_ranking_geral():
+    assert sc.escolher_candidatos(RANK_MISTO, 5, None) == RANK_MISTO[:5]
+
+
+def test_cota_reserva_vagas_por_classe_e_mantem_a_ordem_do_ranking():
+    escolhidos = sc.escolher_candidatos(RANK_MISTO, 5, 2)
+    assert escolhidos == ["PETR4.SA", "HGLG11.SA", "VALE3.SA", "KNRI11.SA", "ITUB4.SA"]   # 3 ações + 2 FIIs
+    # o ranking geral não escolheria o 2º FII: ele só entra pela cota
+    assert "KNRI11.SA" not in RANK_MISTO[:3] and sc.escolher_candidatos(RANK_MISTO, 3, None) == RANK_MISTO[:3]
+
+
+def test_vaga_de_fii_nao_preenchida_vai_para_o_proximo_do_ranking():
+    ranking = ["PETR4.SA", "HGLG11.SA", "VALE3.SA", "ITUB4.SA", "ABEV3.SA", "WEGE3.SA"]    # só 1 FII aprovado
+    assert sc.escolher_candidatos(ranking, 5, 2) == ["PETR4.SA", "HGLG11.SA", "VALE3.SA", "ITUB4.SA", "ABEV3.SA"]
+    sem_fii = ["PETR4.SA", "VALE3.SA", "ITUB4.SA", "ABEV3.SA", "WEGE3.SA", "BBDC4.SA"]
+    assert sc.escolher_candidatos(sem_fii, 5, 2) == sem_fii[:5]
+
+
+def test_vaga_de_acao_nao_preenchida_vai_para_o_proximo_do_ranking():
+    ranking = ["HGLG11.SA", "KNRI11.SA", "XPLG11.SA", "PETR4.SA"]                          # só 1 ação aprovada
+    assert sc.escolher_candidatos(ranking, 5, 2) == ranking                                # 4 aprovados, todos entram
+
+
+def test_cota_zero_de_fiis_so_escolhe_acoes():
+    assert sc.escolher_candidatos(RANK_MISTO, 3, 0) == ["PETR4.SA", "VALE3.SA", "ITUB4.SA"]
+
+
+def test_ticker_fora_da_lista_conta_como_acao_na_cota():
+    assert sc.escolher_candidatos(["XPTO3.SA", "HGLG11.SA", "KNRI11.SA"], 2, 1) == ["XPTO3.SA", "HGLG11.SA"]
+
+
+def test_misto_acompanha_o_peso_das_vagas():
+    (nome, pesos), = sc.misto_por_cota(5, 2).items()
+    assert nome == "Misto 60/40 (IBOV+IFIX)" and pesos == pytest.approx({"IBOV (BOVA11)": 0.6, "IFIX (XFIX11)": 0.4})
+    (nome, pesos), = sc.misto_por_cota(3, 1).items()
+    assert nome == "Misto 67/33 (IBOV+IFIX)" and sum(pesos.values()) == pytest.approx(1.0)
+    assert sc.misto_por_cota(5, 0) == {} and sc.misto_por_cota(5, 5) == {}                 # carteira de um tipo só
+
+
+def test_backtest_com_cota_divide_o_aporte_entre_ações_e_fiis(monkeypatch):
+    # como na execução real: os 5 primeiros do ranking geral são todos ações e os FIIs ficam mais abaixo
+    ranking = ["PETR4.SA", "VALE3.SA", "ITUB4.SA", "ABEV3.SA", "WEGE3.SA", "HGLG11.SA", "KNRI11.SA"]
+    raw, adj, div = mercado(ranking)
+    monkeypatch.setattr(sc, "selecionar", ranking_fixo(lambda i: ranking))
+    curva, ops = sc.backtest(raw, adj, div, 200.0, 5, cota_fiis=2)
+    assert set(ops[ops.tipo == "COMPRA_APORTE"].ticker) == {"PETR4.SA", "VALE3.SA", "ITUB4.SA", "HGLG11.SA", "KNRI11.SA"}
+    assert curva.selecionados_com_sinal_anterior.iloc[-1] == "PETR4.SA,VALE3.SA,ITUB4.SA,HGLG11.SA,KNRI11.SA"
+    assert (curva.valor_posicoes_fiis / curva.valor_posicoes).iloc[-1] == pytest.approx(0.4)    # 2 de 5 vagas
+    _, ops_sem = sc.backtest(raw, adj, div, 200.0, 5)                                       # sem cota: ranking geral
+    assert set(ops_sem[ops_sem.tipo == "COMPRA_APORTE"].ticker) == set(ranking[:5])
+    assert (sc.backtest(raw, adj, div, 200.0, 5)[0].valor_posicoes_fiis == 0).all()
+
+
+def test_formatar_escolhidos_mostra_divisao_do_aporte():
+    escolhidos = ["PETR4.SA", "HGLG11.SA", "VALE3.SA", "KNRI11.SA", "ITUB4.SA"]
+    posicao = {t: i + 1 for i, t in enumerate(RANK_MISTO)}
+    texto = "\n".join(sc.formatar_escolhidos(escolhidos, posicao, 200.0, 5, 2))
+    assert "(3 ações + 2 FIIs;" in texto and "não recomendação" in texto
+    assert "HGLG11.SA  FII   #2 no ranking geral   R$ 40.00" in texto
+    assert "PETR4.SA   ação  #1 no ranking geral   R$ 40.00" in texto
+    assert "Atenção" not in texto and "Sobra" not in texto
+    assert "os 5 melhores do ranking geral" in "\n".join(sc.formatar_escolhidos(escolhidos, posicao, 200.0, 5, None))
+
+
+def test_formatar_escolhidos_avisa_quando_faltam_fiis():
+    escolhidos = ["PETR4.SA", "HGLG11.SA", "VALE3.SA", "ITUB4.SA", "ABEV3.SA"]
+    posicao = {t: i + 1 for i, t in enumerate(escolhidos)}
+    texto = "\n".join(sc.formatar_escolhidos(escolhidos, posicao, 200.0, 5, 2))
+    assert "Atenção: só passaram nos filtros 4 ações e 1 FIIs" in texto
+
+
+def test_tabela_ranking_inclui_escolhidos_abaixo_do_limite_exibido():
+    ordem = [f"A{i:02d}.SA" for i in range(12)] + ["HGLG11.SA"]                           # o FII está na 13ª posição
+    geral = pd.DataFrame({"ticker": ordem, "preco_referencia": 10.0, "dy_12m_pct": 6.0, "anos_com_div_ult_3": 3,
+                          "retorno_preco_12m_pct": 5.0, "score": np.linspace(0.9, 0.5, len(ordem))})
+    tabela = sc.tabela_ranking(geral, ["A00.SA", "HGLG11.SA"], n_ranking=10)
+    assert tabela.ticker.tolist() == ordem[:10] + ["HGLG11.SA"]                           # 10 primeiros + o escolhido
+    assert tabela.posicao.iloc[-1] == 13 and tabela.classe.iloc[-1] == "FII" and tabela.classe.iloc[0] == "ação"
+    assert tabela.escolhido_hoje.tolist().count("sim") == 2
+    assert tabela.columns.tolist() == ["posicao", "ticker", "classe", "escolhido_hoje"] + sc.COLUNAS_RANKING[1:]
+
+
+def test_avaliar_benchmarks_aceita_misto_proprio(monkeypatch):
+    curva, indice = curva_sintetica()
+    monkeypatch.setattr(sc, "baixar_dados", etfs_com(indice, indice))
+    monkeypatch.setattr(sc, "baixar_cdi", lambda ini, fim: cdi_diario(ini, fim))
+    _, vazio = sc.avaliar_benchmarks(curva, "2022-01-01", mistos={})
+    assert not any(n.startswith("Misto") for n in vazio.nome)
+    _, resumo = sc.avaliar_benchmarks(curva, "2022-01-01", mistos=sc.misto_por_cota(5, 2))
+    assert "Misto 60/40 (IBOV+IFIX)" in resumo.nome.tolist() and "Misto 50/50 (IBOV+IFIX)" not in resumo.nome.tolist()
+
+
+def test_main_sem_cota_volta_ao_ranking_geral_e_ao_misto_50_50(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(sc, "baixar_cdi", cdi_diario)
+    rodar_main(monkeypatch, tmp_path, "--sem-cota")
+    comparacao = pd.read_csv(tmp_path / "r_comparacao.csv")
+    assert "Misto 50/50 (IBOV+IFIX)" in comparacao.nome.tolist()
+    assert "os 3 melhores do ranking geral" in capsys.readouterr().out
+
+
+def test_main_recusa_fiis_acima_do_top(monkeypatch, tmp_path):
+    with pytest.raises(SystemExit, match="--fiis"):
+        rodar_main(monkeypatch, tmp_path, "--fiis", "4")                                   # --top é 3
+
+
+def test_main_aceita_fiis_explicito(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(sc, "baixar_cdi", cdi_diario)
+    rodar_main(monkeypatch, tmp_path, "--fiis", "0")
+    assert "(3 ações + 0 FIIs;" in capsys.readouterr().out
+    assert not any(n.startswith("Misto") for n in pd.read_csv(tmp_path / "r_comparacao.csv").nome)   # 100% ações: sem misto
+
+
 # ---------- fluxo completo, offline ----------
 
 class TickerFalso:
@@ -357,14 +474,18 @@ def test_main_gera_os_csv_com_benchmarks(monkeypatch, tmp_path, capsys):
     assert (tmp_path / "r_ranking.csv").exists()
     assert len(curva) > 12 and curva.total_aportado.iloc[-1] == 200 * len(curva)
     assert {"COMPRA_APORTE"} <= set(ops.tipo) and "observacao" in ops.columns
-    assert comparacao.nome.tolist() == ["Estratégia", "CDI", "IBOV (BOVA11)", "IDIV (DIVO11)", "IFIX (XFIX11)", "Misto 50/50 (IBOV+IFIX)"]
+    assert comparacao.nome.tolist() == ["Estratégia", "CDI", "IBOV (BOVA11)", "IDIV (DIVO11)", "IFIX (XFIX11)", "Misto 67/33 (IBOV+IFIX)"]
     assert comparacao.xirr_aa_pct.notna().all() and (comparacao.max_drawdown_pct <= 0).all()
     assert {"valor_cdi", "valor_ibov_bova11", "valor_idiv_divo11", "valor_ifix_xfix11",
-            "valor_misto_50_50_ibov_ifix"} <= set(curva.columns)
+            "valor_misto_67_33_ibov_ifix"} <= set(curva.columns)
     assert comparacao.total_aportado.eq(curva.total_aportado.iloc[-1]).all()
     saida = capsys.readouterr().out
     assert "RESULTADO DO BACKTEST" in saida and "XIRR da estratégia" in saida and "COMPARAÇÃO COM BENCHMARKS" in saida
     assert "Maior drawdown (índice de retorno" in saida
+    assert "ESCOLHIDOS PARA O PRÓXIMO APORTE (2 ações + 1 FIIs" in saida and "Compare com Misto 67/33" in saida
+    ranking = pd.read_csv(tmp_path / "r_ranking.csv")
+    assert ranking.columns.tolist()[:4] == ["posicao", "ticker", "classe", "escolhido_hoje"]
+    assert (ranking.escolhido_hoje == "sim").sum() == 3 and ranking[ranking.escolhido_hoje == "sim"].classe.value_counts().to_dict() == {"ação": 2, "FII": 1}
     assert "COMPOSIÇÃO DA CARTEIRA" in saida and "FIIs" in saida
     assert {"valor_posicoes_acoes", "valor_posicoes_fiis"} <= set(curva.columns)
     diagnostico = pd.read_csv(tmp_path / "r_diagnostico.csv")

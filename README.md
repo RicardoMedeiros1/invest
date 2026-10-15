@@ -22,6 +22,8 @@ Se o PowerShell bloquear a ativação do ambiente virtual, use `.\.venv\Scripts\
 ```powershell
 python scanner_dividendos_b3.py --anos 8 --aporte 200 --top 5
 python scanner_dividendos_b3.py --anos 10 --aporte 200 --top 5 --saida minha_carteira
+python scanner_dividendos_b3.py --top 5 --fiis 3   # 2 ações + 3 FIIs entre os 5 escolhidos
+python scanner_dividendos_b3.py --sem-cota         # os 5 melhores do ranking geral, sem vagas por classe
 python scanner_dividendos_b3.py --sem-benchmark    # não baixa CDI nem ETFs de referência
 ```
 
@@ -31,7 +33,7 @@ Arquivos gerados (prefixo `resultado_dividendos`, ou o valor de `--saida`):
 
 | Arquivo | Conteúdo |
 |---|---|
-| `*_ranking.csv` | Ativos aprovados no último mês fechado, com yield de 12 meses, períodos com proventos, retorno de preço em 12 meses e pontuação |
+| `*_ranking.csv` | Ativos aprovados no último mês fechado, com posição no ranking geral, classe (ação ou FII), marca dos escolhidos para o próximo aporte (`escolhido_hoje`), yield de 12 meses, períodos com proventos, retorno de preço em 12 meses e pontuação |
 | `*_backtest.csv` | Patrimônio mensal, total aportado, caixa, ganho/perda, ativos mantidos, quantidade de elegíveis e os selecionados, valor das posições em ações e em FIIs (`valor_posicoes_acoes`, `valor_posicoes_fiis`), mais uma coluna `valor_*` por benchmark |
 | `*_operacoes.csv` | Compras dos aportes e vendas por saída dos filtros (coluna `observacao` marca vendas feitas pelo último preço conhecido) |
 | `*_diagnostico.csv` | Situação de cada ativo do universo no último mês fechado: aprovado (com a posição no ranking) ou excluído (com os motivos) |
@@ -50,9 +52,9 @@ A comparação coloca **os mesmos aportes, nas mesmas datas**, em cada referênc
 | IDIV (DIVO11) | Yahoo Finance, preço ajustado do ETF | Índice de dividendos; é um ETF recente, com histórico curto, e é ignorado (com aviso) se não cobrir todo o período do backtest |
 | IFIX (XFIX11) | Yahoo Finance, preço ajustado do ETF | Benchmark de FIIs: ETF que replica o IFIX (algumas fontes citam a versão IFIX-L, mais líquida), negociado desde nov/2020. Ignorado com aviso se o Yahoo não tiver o ticker |
 
-| Misto 50/50 (IBOV+IFIX) | Combinação dos dois ETFs acima | Cada aporte é dividido meio a meio entre BOVA11 e XFIX11, **sem vender para rebalancear** (como a estratégia, que só compra); o peso de cada um deriva com o tempo. O patrimônio é a média dos patrimônios dos dois. Só entra se os dois existirem |
+| Misto (IBOV+IFIX) | Combinação dos dois ETFs acima | Com a cota por classe (padrão), o peso acompanha as vagas: 3 de 5 em ações = **Misto 60/40**. Com `--sem-cota`, vale o 50/50 de `BENCHMARKS_MISTOS`. Cada aporte é dividido entre BOVA11 e XFIX11 nesses pesos, **sem vender para rebalancear** (como a estratégia, que só compra); o peso de cada um deriva com o tempo. O patrimônio é a média dos patrimônios dos dois. Só entra se os dois existirem |
 
-Um benchmark que não puder ser baixado também gera apenas um aviso, e o resto segue normalmente. A lista de ETFs fica em `BENCHMARKS_ETF`, no início do arquivo; para usar outra referência (por exemplo, outro ETF de FIIs), troque ou acrescente o ticker ali. Os pesos e os componentes do misto ficam em `BENCHMARKS_MISTOS` (os pesos devem somar 1; dá para criar outros, como um misto 70/30).
+Um benchmark que não puder ser baixado também gera apenas um aviso, e o resto segue normalmente. A lista de ETFs fica em `BENCHMARKS_ETF`, no início do arquivo; para usar outra referência (por exemplo, outro ETF de FIIs), troque ou acrescente o ticker ali. O misto 50/50 de `BENCHMARKS_MISTOS` (pesos que somam 1; dá para criar outros, como um 70/30) só é usado com `--sem-cota`.
 
 O **drawdown** (maior queda de um pico até o vale) é calculado sobre um **índice de retorno ponderado pelo tempo**, e não sobre o patrimônio. Os aportes empurram o patrimônio para cima e escondem parte da queda: num teste com 5 anos de aportes e uma queda de 30% em um mês, o patrimônio mostrava −28,3%, enquanto o índice de retorno mostra os −30,0% reais. O retorno de cada mês é `(patrimônio − aporte) / patrimônio do mês anterior − 1`; os custos de negociação ficam dentro do retorno, e o caixa parado rende zero. A mesma conta vale para a estratégia e para os benchmarks, então os números são comparáveis. Como os pontos são mensais, quedas dentro do mês não aparecem.
 
@@ -73,7 +75,8 @@ O ranking mostra só os melhores aprovados. O diagnóstico responde à pergunta 
 
 ## Regras de compra, manutenção e venda (como implementadas)
 
-- **Comprar/reforçar:** o aporte do mês (mais o caixa de vendas) é dividido entre os `--top` melhores do ranking, respeitando os limites de peso abaixo.
+- **Comprar/reforçar:** o aporte do mês (mais o caixa de vendas) é dividido em partes iguais entre os `--top` escolhidos, respeitando os limites de peso abaixo. Os escolhidos seguem uma **cota por classe**: por padrão, 40% das vagas são de FIIs (2 de 5) e as demais de ações, cada classe pelo seu melhor ranqueamento. Mude com `--fiis N`. Se uma classe não tiver aprovados suficientes, a vaga vai para o próximo melhor do ranking geral, e o script avisa. Com `--sem-cota`, valem os `--top` melhores do ranking geral, que na prática foram quase só ações (os FIIs pontuam menos: pagam mais dividendo e o preço deles andou mais fraco).
+  Por que a cota: sem ela, os FIIs quase não entravam (5,5% da carteira em média numa execução real). A cota é uma decisão de composição, não uma melhoria comprovada de retorno: rode as duas versões e compare.
 - **Manter:** um ativo que continua passando nos filtros é mantido, mesmo que saia do top. Ele só deixa de receber aportes.
 - **Vender:** só quando o ativo deixa de passar nos filtros. No backtest isso gera uma venda simulada, com custo estimado. Na prática, complemente com análise dos resultados, da dívida e dos riscos do ativo.
 - **Sem cotação no mês:** a posição é avaliada e, se necessário, liquidada pelo último preço conhecido (e sinalizada em `observacao`), nunca descartada.
@@ -89,7 +92,7 @@ Não há regra de "comprar porque o preço caiu": uma queda pode ser oportunidad
 3. **Fundamentos:** os filtros não usam balanços disponíveis em cada data, então o ranking histórico pode não refletir o que se sabia na época.
 4. **Custos e tributação:** a taxa é uma estimativa. Impostos, spreads, liquidez e lotes fracionários não estão modelados.
 5. **Métricas:** o drawdown usa pontos mensais, então não captura quedas dentro do mês. Não há volatilidade nem outras medidas de risco.
-6. **Benchmarks:** todos sem imposto de renda (CDI bruto). O IBOV e o IFIX entram como ETFs, com a taxa de administração embutida. O misto 50/50 só é uma boa referência se a sua carteira tiver, de fato, algo perto de metade em ações e metade em FIIs. A estratégia não fixa essa proporção: ela depende do que passa nos filtros em cada mês. O script imprime a proporção real na seção **Composição da carteira** (ações x FIIs entre as posições, sem o caixa): ao final, a média mensal e a faixa de variação do peso de FIIs. Se ela for bem diferente de 50/50, ajuste os pesos em `BENCHMARKS_MISTOS` ou compare com o IBOV e o IFIX separadamente. Ticker fora das listas `ACOES` e `FIIS` conta como ação. O resultado depende muito do período: um backtest curto compara a estratégia com cada benchmark em um único ciclo de mercado.
+6. **Benchmarks:** todos sem imposto de renda (CDI bruto). O IBOV e o IFIX entram como ETFs, com a taxa de administração embutida. O misto só é uma boa referência se a carteira tiver, de fato, a proporção dele. Com a cota por classe, o script monta o misto com o peso das vagas (60/40 para 3 ações + 2 FIIs); sem cota, a proporção depende do que passa nos filtros em cada mês. O script imprime a proporção real na seção **Composição da carteira** (ações x FIIs entre as posições, sem o caixa): ao final, a média mensal e a faixa de variação do peso de FIIs. Se ela for bem diferente da do misto, compare com o IBOV e o IFIX separadamente. Ticker fora das listas `ACOES` e `FIIS` conta como ação. O resultado depende muito do período: um backtest curto compara a estratégia com cada benchmark em um único ciclo de mercado.
 7. **Dados do Yahoo Finance:** podem ter falhas e lacunas, principalmente em proventos de FIIs. Para FIIs, a CVM publica informes mensais estruturados.
 
 ## Testes
