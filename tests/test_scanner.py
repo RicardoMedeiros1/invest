@@ -192,6 +192,130 @@ def test_composicao_sem_posicoes_devolve_none():
     assert sc.composicao(curva) is None
 
 
+# ---------- diagnóstico de exclusão ----------
+
+def mercado_do_diagnostico():
+    """Um ativo de cada tipo de exclusão, em preços planos (10,00) e 60 meses."""
+    tickers = ["ITUB4.SA", "BBSE3.SA", "EGIE3.SA", "HGLG11.SA", "XPLG11.SA", "KNRI11.SA", "VISC11.SA", "MXRF11.SA"]
+    raw, adj, div = mercado(tickers)
+    div["ITUB4.SA"] = 0.05                                      # 6% a.a., estável: aprovado
+    div["BBSE3.SA"] = 0.01                                      # 1,2%: abaixo do mínimo
+    div["EGIE3.SA"] = 0.30                                      # 36%: acima do máximo
+    div["HGLG11.SA"] = 0.125                                    # 15% e corte para ~5% no último ano
+    div.loc[div.index[48]:, "HGLG11.SA"] = 0.04167
+    div["XPLG11.SA"] = 0.0                                      # nunca pagou
+    div["KNRI11.SA"] = 0.0
+    div.loc[div.index[48]:, "KNRI11.SA"] = 0.05                 # só pagou no último ano
+    div["VISC11.SA"] = 0.05
+    raw.loc[:raw.index[39], "VISC11.SA"] = np.nan               # listado há 20 meses
+    adj.loc[:adj.index[39], "VISC11.SA"] = np.nan
+    div["MXRF11.SA"] = 0.05
+    raw.loc[raw.index[-1], "MXRF11.SA"] = np.nan                # sem cotação no mês do sinal
+    adj.loc[adj.index[-1], "MXRF11.SA"] = np.nan
+    return raw, adj, div, tickers
+
+
+def test_diagnostico_explica_cada_exclusao():
+    raw, adj, div, tickers = mercado_do_diagnostico()
+    sinais = sc.metricas_historicas(raw, div)
+    diag = sc.diagnosticar(raw, adj, sinais, raw.index[-1], tickers + ["ABEV3.SA"]).set_index("ticker")
+    assert sorted(diag.index) == sorted(tickers + ["ABEV3.SA"])                  # cada ativo uma vez
+    assert diag.loc["ITUB4.SA", "situacao"] == "APROVADO" and diag.loc["ITUB4.SA", "motivo"] == ""
+    assert diag.loc["ITUB4.SA", "posicao_ranking"] == 1 and diag.loc["ITUB4.SA", "score"] > 0
+    assert "abaixo do mínimo de 3.0%" in diag.loc["BBSE3.SA", "motivo"]
+    assert "acima do máximo de 18.0%" in diag.loc["EGIE3.SA", "motivo"]
+    assert "caíram para 33%" in diag.loc["HGLG11.SA", "motivo"]
+    assert diag.loc["HGLG11.SA", "classe"] == "FII" and diag.loc["ITUB4.SA", "classe"] == "ACAO"
+    assert "abaixo do mínimo" in diag.loc["XPLG11.SA", "motivo"]
+    assert "proventos em 0 de 3" in diag.loc["XPLG11.SA", "motivo"]              # dois motivos juntos
+    assert "; " in diag.loc["XPLG11.SA", "motivo"]
+    assert "proventos em 1 de 3" in diag.loc["KNRI11.SA", "motivo"]
+    assert "histórico menor que 36 meses (20 meses de dados)" in diag.loc["VISC11.SA", "motivo"]
+    assert diag.loc["VISC11.SA", "meses_de_historico"] == 20
+    assert diag.loc["MXRF11.SA", "motivo"] == "sem cotação no mês do sinal"
+    assert diag.loc["ABEV3.SA", "motivo"] == "sem dados do Yahoo (falha no download)"
+    assert (diag.drop(index="ITUB4.SA").situacao == "EXCLUIDO").all()
+    assert diag.loc["BBSE3.SA", "dy_12m_pct"] == pytest.approx(1.2)               # métricas aparecem mesmo excluído
+
+
+def test_diagnostico_ordena_aprovados_primeiro_por_posicao():
+    raw, adj, div, tickers = mercado_do_diagnostico()
+    sinais = sc.metricas_historicas(raw, div)
+    diag = sc.diagnosticar(raw, adj, sinais, raw.index[-1], tickers)
+    assert diag.situacao.tolist() == ["APROVADO"] + ["EXCLUIDO"] * 7
+    assert diag.columns.tolist() == sc.COLUNAS_DIAGNOSTICO
+
+
+def test_motivo_de_falta_do_retorno_de_12_meses():
+    raw, adj, div = mercado(["ITUB4.SA"], div_mensal=0.05)
+    sinais = sc.metricas_historicas(raw, div)
+    sinais["retorno_12m"].loc[raw.index[-1], "ITUB4.SA"] = np.nan
+    motivos, _ = sc.motivos_exclusao(raw, adj, sinais, raw.index[-1], "ITUB4.SA")
+    assert motivos == ["sem retorno de preço de 12 meses (falta de cotação)"]
+    assert sc.selecionar(raw, adj, sinais, raw.index[-1], 5).empty
+
+
+def mercado_aleatorio(seed=7, n_ativos=40, n_meses=100):
+    """Muitas exclusões: yields fora da faixa, cortes, listagens tardias e buracos de cotação."""
+    rng = np.random.default_rng(seed)
+    idx = pd.date_range("2016-01-31", periods=n_meses, freq="ME")
+    raw, adj, div = {}, {}, {}
+    for k in range(n_ativos):
+        nome = f"T{k:02d}.SA"
+        preco = 20 * np.exp(np.cumsum(rng.normal(0.003, 0.05, n_meses)))
+        alvo, freq = rng.choice([0.0, 0.01, 0.035, 0.06, 0.09, 0.15, 0.4]), rng.choice([1, 3, 12])
+        d = np.array([preco[i] * alvo / freq if i % (12 // freq) == 0 and rng.random() > 0.15 else 0.0
+                      for i in range(n_meses)])
+        if rng.random() < 0.35:
+            d[rng.integers(40, 90):] *= 0.3
+        inicio = rng.choice([0, 0, 20, 50])
+        p = pd.Series(preco, index=idx)
+        p.iloc[:inicio] = np.nan
+        if rng.random() < 0.3:
+            p.iloc[rng.integers(max(inicio, 1), n_meses, 3)] = np.nan
+        raw[nome], adj[nome], div[nome] = p, p.copy(), pd.Series(d, index=idx)
+    return pd.DataFrame(raw), pd.DataFrame(adj), pd.DataFrame(div)
+
+
+def test_diagnostico_e_ranking_nunca_divergem_em_mercado_aleatorio():
+    raw, adj, div = mercado_aleatorio()
+    sinais = sc.metricas_historicas(raw, div)
+    total_aprovados = total_excluidos = 0
+    for data in raw.index[36::5]:
+        ranking = sc.selecionar(raw, adj, sinais, data, 999)
+        diag = sc.diagnosticar(raw, adj, sinais, data, list(raw.columns))
+        aprovados = diag[diag.situacao == "APROVADO"]
+        assert aprovados.ticker.tolist() == ranking.ticker.tolist()               # mesmos ativos, mesma ordem
+        assert aprovados.posicao_ranking.tolist() == list(range(1, len(ranking) + 1))
+        assert aprovados.score.tolist() == pytest.approx(ranking.score.tolist())
+        excluidos = diag[diag.situacao == "EXCLUIDO"]
+        assert (excluidos.motivo != "").all()                                      # todo excluído tem motivo
+        assert len(aprovados) + len(excluidos) == raw.shape[1]
+        total_aprovados += len(aprovados)
+        total_excluidos += len(excluidos)
+    assert total_aprovados > 0 and total_excluidos > total_aprovados               # o teste exercita exclusões de verdade
+
+
+def test_formatar_diagnostico_resume_por_classe_e_lista_os_excluidos():
+    raw, adj, div, tickers = mercado_do_diagnostico()
+    sinais = sc.metricas_historicas(raw, div)
+    data = raw.index[-1]
+    diag = sc.diagnosticar(raw, adj, sinais, data, tickers)
+    texto = "\n".join(sc.formatar_diagnostico(diag, data, n_exibidos=10))
+    assert "DIAGNÓSTICO DE EXCLUSÃO (sinal de 2024-12)" in texto
+    assert "Aprovados: 1 de 8 (ações: 1/3, FIIs: 0/5)" in texto
+    assert "Excluídos (7):" in texto and "HGLG11.SA  FII " in texto and "BBSE3.SA" in texto
+    assert "fora do ranking exibido" not in texto
+    assert "ITUB4.SA (#1)" in "\n".join(sc.formatar_diagnostico(diag, data, n_exibidos=0))   # fora do que foi exibido
+
+
+def test_formatar_diagnostico_sem_excluidos():
+    raw, adj, div = mercado(["ITUB4.SA"], div_mensal=0.05)
+    sinais = sc.metricas_historicas(raw, div)
+    diag = sc.diagnosticar(raw, adj, sinais, raw.index[-1], ["ITUB4.SA"])
+    assert "Nenhum ativo foi excluído." in sc.formatar_diagnostico(diag, raw.index[-1], 10)
+
+
 # ---------- fluxo completo, offline ----------
 
 class TickerFalso:
@@ -243,6 +367,9 @@ def test_main_gera_os_csv_com_benchmarks(monkeypatch, tmp_path, capsys):
     assert "Maior drawdown (índice de retorno" in saida
     assert "COMPOSIÇÃO DA CARTEIRA" in saida and "FIIs" in saida
     assert {"valor_posicoes_acoes", "valor_posicoes_fiis"} <= set(curva.columns)
+    diagnostico = pd.read_csv(tmp_path / "r_diagnostico.csv")
+    assert len(diagnostico) == 6 and diagnostico.columns.tolist() == sc.COLUNAS_DIAGNOSTICO
+    assert "DIAGNÓSTICO DE EXCLUSÃO" in saida and "r_diagnostico.csv" in saida
     assert (curva.valor_posicoes_acoes + curva.valor_posicoes_fiis).to_numpy() == pytest.approx(curva.valor_posicoes.to_numpy())
 
 

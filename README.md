@@ -34,6 +34,7 @@ Arquivos gerados (prefixo `resultado_dividendos`, ou o valor de `--saida`):
 | `*_ranking.csv` | Ativos aprovados no último mês fechado, com yield de 12 meses, períodos com proventos, retorno de preço em 12 meses e pontuação |
 | `*_backtest.csv` | Patrimônio mensal, total aportado, caixa, ganho/perda, ativos mantidos, quantidade de elegíveis e os selecionados, valor das posições em ações e em FIIs (`valor_posicoes_acoes`, `valor_posicoes_fiis`), mais uma coluna `valor_*` por benchmark |
 | `*_operacoes.csv` | Compras dos aportes e vendas por saída dos filtros (coluna `observacao` marca vendas feitas pelo último preço conhecido) |
+| `*_diagnostico.csv` | Situação de cada ativo do universo no último mês fechado: aprovado (com a posição no ranking) ou excluído (com os motivos) |
 | `*_comparacao.csv` | Valor final, ganho, XIRR e drawdown da estratégia e de cada benchmark, e a diferença de XIRR em pontos percentuais |
 
 ## XIRR, drawdown e benchmarks
@@ -66,6 +67,10 @@ O **drawdown** (maior queda de um pico até o vale) é calculado sobre um **índ
 
 Pontuação: consistência dos proventos (45%), proximidade de um yield de referência de 6% (35%) e tendência de preço em 12 meses (20%). Os pesos são parâmetros iniciais para testes, não valores comprovadamente ótimos. Um yield de 17% não é necessariamente sustentável: pode vir de queda forte no preço ou de pagamento extraordinário.
 
+### Diagnóstico de exclusão
+
+O ranking mostra só os melhores aprovados. O diagnóstico responde à pergunta contrária: *por que este ativo não aparece?* Ele lista cada ativo da lista que ficou de fora e **todos** os filtros que reprovou (não só o primeiro), por exemplo `yield de 12m 2.10% abaixo do mínimo de 3.0%` ou `proventos caíram para 33% do período anterior (mínimo 50%)`. Também aparecem os ativos que nem foram baixados (`sem dados do Yahoo`), os sem cotação no mês, os com menos de 36 meses de histórico e os aprovados que ficaram abaixo da posição exibida no ranking. O arquivo `*_diagnostico.csv` traz as métricas de todos, inclusive dos excluídos. O ranking e o diagnóstico usam a mesma função de decisão, então não podem divergir.
+
 ## Regras de compra, manutenção e venda (como implementadas)
 
 - **Comprar/reforçar:** o aporte do mês (mais o caixa de vendas) é dividido entre os `--top` melhores do ranking, respeitando os limites de peso abaixo.
@@ -94,4 +99,4 @@ pip install pytest
 python -m pytest
 ```
 
-Os testes são offline (dados sintéticos e respostas simuladas do Banco Central) e cobrem a contagem de proventos, o corte de proventos, os limites de peso, a regra de venda, o tratamento de ativos sem cotação, o XIRR, o drawdown, os benchmarks (inclusive o misto) e a composição da carteira.
+Os testes são offline (dados sintéticos e respostas simuladas do Banco Central) e cobrem a contagem de proventos, o corte de proventos, os limites de peso, a regra de venda, o tratamento de ativos sem cotação, o XIRR, o drawdown, os benchmarks (inclusive o misto), a composição da carteira e o diagnóstico de exclusão.

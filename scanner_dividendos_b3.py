@@ -118,6 +118,44 @@ def metricas_historicas(raw: pd.DataFrame, div: pd.DataFrame) -> dict[str, pd.Da
             "razao_proventos": razao_proventos}
 
 
+COLUNAS_RANKING = ["ticker", "preco_referencia", "dy_12m_pct", "anos_com_div_ult_3",
+                   "retorno_preco_12m_pct", "score"]
+
+
+def motivos_exclusao(raw: pd.DataFrame, adj: pd.DataFrame, sinais: dict[str, pd.DataFrame],
+                     data_sinal: pd.Timestamp, ticker: str) -> tuple[list[str], dict[str, float]]:
+    """Por que o ativo não passa nos filtros em data_sinal, e as métricas calculadas.
+
+    Lista vazia = aprovado. É a única definição dos filtros: o ranking (`selecionar`) e o
+    diagnóstico usam esta função, então não podem divergir. Sem dados suficientes, devolve só
+    esse motivo; com dados, lista todos os filtros reprovados, não apenas o primeiro.
+    """
+    preco = raw.at[data_sinal, ticker]
+    dy = sinais["dy"].at[data_sinal, ticker]
+    anos = sinais["anos_div"].at[data_sinal, ticker]
+    razao = sinais["razao_proventos"].at[data_sinal, ticker]
+    ret12 = sinais["retorno_12m"].at[data_sinal, ticker]
+    meses = len(adj[ticker].loc[:data_sinal].dropna())
+    metricas = {"preco": preco, "dy": dy, "anos": anos, "razao": razao, "ret12": ret12, "meses": meses}
+    if pd.isna(preco) or preco <= 0:
+        return ["sem cotação no mês do sinal"], metricas
+    if pd.isna(dy) or pd.isna(anos) or meses < MESES_HISTORICO:
+        return [f"histórico menor que {MESES_HISTORICO} meses ({meses} meses de dados)"], metricas
+    motivos = []
+    if dy < YIELD_MINIMO:
+        motivos.append(f"yield de 12m {dy * 100:.2f}% abaixo do mínimo de {YIELD_MINIMO * 100:.1f}%")
+    if dy > YIELD_MAXIMO:
+        motivos.append(f"yield de 12m {dy * 100:.2f}% acima do máximo de {YIELD_MAXIMO * 100:.1f}%")
+    if anos < MIN_ANOS_COM_DIVIDENDO:
+        motivos.append(f"proventos em {int(anos)} de 3 períodos de 12m (mínimo {MIN_ANOS_COM_DIVIDENDO})")
+    if MIN_RAZAO_PROVENTOS and pd.notna(razao) and razao < MIN_RAZAO_PROVENTOS:
+        motivos.append(f"proventos caíram para {razao * 100:.0f}% do período anterior "
+                       f"(mínimo {MIN_RAZAO_PROVENTOS * 100:.0f}%)")
+    if pd.isna(ret12):
+        motivos.append("sem retorno de preço de 12 meses (falta de cotação)")
+    return motivos, metricas
+
+
 def selecionar(raw: pd.DataFrame, adj: pd.DataFrame,
                sinais: dict[str, pd.DataFrame], data_sinal: pd.Timestamp,
                top_n: int) -> pd.DataFrame:
@@ -126,40 +164,79 @@ def selecionar(raw: pd.DataFrame, adj: pd.DataFrame,
     for t in raw.columns:
         if data_sinal not in raw.index:
             continue
-        preco = raw.at[data_sinal, t] if t in raw.columns else np.nan
-        dy = sinais["dy"].at[data_sinal, t]
-        anos = sinais["anos_div"].at[data_sinal, t]
-        hist = adj[t].loc[:data_sinal].dropna()
-        if pd.isna(preco) or preco <= 0 or pd.isna(dy) or pd.isna(anos):
+        motivos, m = motivos_exclusao(raw, adj, sinais, data_sinal, t)
+        if motivos:
             continue
-        if len(hist) < MESES_HISTORICO:
-            continue
-        if not (YIELD_MINIMO <= dy <= YIELD_MAXIMO):
-            continue
-        if anos < MIN_ANOS_COM_DIVIDENDO:
-            continue
-        razao = sinais["razao_proventos"].at[data_sinal, t]
-        if MIN_RAZAO_PROVENTOS and pd.notna(razao) and razao < MIN_RAZAO_PROVENTOS:
-            continue
-        # Penaliza tendência negativa de longo prazo; não usa qualquer dado posterior à data do sinal.
-        ret12 = sinais["retorno_12m"].at[data_sinal, t]
-        if pd.isna(ret12):
-            continue
+        dy, anos, ret12 = m["dy"], m["anos"], m["ret12"]
         # Pontuação: dividend yield moderado, histórico de proventos e tendência positiva.
-        # Yield tem teto e piso para evitar premiar yield extremo.
+        # Yield tem teto e piso para evitar premiar yield extremo. Penaliza tendência negativa de
+        # longo prazo; não usa qualquer dado posterior à data do sinal.
         score_dy = 1.0 - abs(float(dy) - 0.06) / 0.12
         score_consistencia = min(float(anos) / 3.0, 1.0)
         score_tendencia = float(np.clip((ret12 + 0.20) / 0.60, 0.0, 1.0))
         score = 0.45 * score_consistencia + 0.35 * score_dy + 0.20 * score_tendencia
         rows.append({
-            "ticker": t, "preco_referencia": float(preco),
+            "ticker": t, "preco_referencia": float(m["preco"]),
             "dy_12m_pct": float(dy * 100), "anos_com_div_ult_3": int(anos),
             "retorno_preco_12m_pct": float(ret12 * 100), "score": score,
         })
     if not rows:
-        return pd.DataFrame(columns=["ticker", "preco_referencia", "dy_12m_pct",
-                                     "anos_com_div_ult_3", "retorno_preco_12m_pct", "score"])
+        return pd.DataFrame(columns=COLUNAS_RANKING)
     return pd.DataFrame(rows).sort_values("score", ascending=False).head(top_n).reset_index(drop=True)
+
+
+COLUNAS_DIAGNOSTICO = ["ticker", "classe", "situacao", "posicao_ranking", "score", "motivo", "dy_12m_pct",
+                       "anos_com_div_ult_3", "proventos_vs_12m_anteriores_pct", "retorno_preco_12m_pct",
+                       "meses_de_historico"]
+
+
+def diagnosticar(raw: pd.DataFrame, adj: pd.DataFrame, sinais: dict[str, pd.DataFrame],
+                 data_sinal: pd.Timestamp, universo: list[str]) -> pd.DataFrame:
+    """Situação de cada ativo do universo em data_sinal: aprovado (com a posição no ranking) ou
+    excluído (com os motivos). Inclui os ativos que nem foram baixados."""
+    aprovados = selecionar(raw, adj, sinais, data_sinal, len(raw.columns))
+    posicao = {t: i + 1 for i, t in enumerate(aprovados["ticker"])}
+    score = dict(zip(aprovados["ticker"], aprovados["score"]))
+    linhas = []
+    for t in universo:
+        base = {"ticker": t, "classe": CLASSE.get(t, "ACAO")}
+        if t not in raw.columns:
+            linhas.append({**base, "situacao": "EXCLUIDO", "motivo": "sem dados do Yahoo (falha no download)"})
+            continue
+        motivos, m = motivos_exclusao(raw, adj, sinais, data_sinal, t)
+        linhas.append({**base, "situacao": "EXCLUIDO" if motivos else "APROVADO",
+                       "posicao_ranking": posicao.get(t), "score": score.get(t), "motivo": "; ".join(motivos),
+                       "dy_12m_pct": m["dy"] * 100, "anos_com_div_ult_3": m["anos"],
+                       "proventos_vs_12m_anteriores_pct": m["razao"] * 100,
+                       "retorno_preco_12m_pct": m["ret12"] * 100, "meses_de_historico": m["meses"]})
+    tabela = pd.DataFrame(linhas, columns=COLUNAS_DIAGNOSTICO)
+    ordem = tabela.assign(_grupo=tabela["situacao"].map({"APROVADO": 0, "EXCLUIDO": 1}),
+                          _pos=tabela["posicao_ranking"].fillna(1e9))
+    return tabela.loc[ordem.sort_values(["_grupo", "_pos", "classe", "ticker"]).index].reset_index(drop=True)
+
+
+def formatar_diagnostico(diagnostico: pd.DataFrame, data_sinal: pd.Timestamp, n_exibidos: int) -> list[str]:
+    """Linhas de texto do diagnóstico para o terminal."""
+    aprovados = diagnostico[diagnostico["situacao"] == "APROVADO"]
+    excluidos = diagnostico[diagnostico["situacao"] == "EXCLUIDO"]
+    por_classe = ", ".join(
+        f"{nome}: {int((aprovados['classe'] == c).sum())}/{int((diagnostico['classe'] == c).sum())}"
+        for c, nome in (("ACAO", "ações"), ("FII", "FIIs")))
+    linhas = [f"=== DIAGNÓSTICO DE EXCLUSÃO (sinal de {data_sinal:%Y-%m}) ===",
+              f"Aprovados: {len(aprovados)} de {len(diagnostico)} ({por_classe})"]
+    if excluidos.empty:
+        linhas.append("Nenhum ativo foi excluído.")
+    else:
+        linhas.append(f"Excluídos ({len(excluidos)}):")
+        largura = int(excluidos["ticker"].str.len().max())
+        for _, r in excluidos.iterrows():
+            classe = "FII" if r["classe"] == "FII" else "ação"
+            linhas.append(f"  {r['ticker']:<{largura}}  {classe:<4}  {r['motivo']}")
+    fora = aprovados[aprovados["posicao_ranking"] > n_exibidos]
+    if not fora.empty:
+        lista = ", ".join(f"{r['ticker']} (#{int(r['posicao_ranking'])})" for _, r in fora.iterrows())
+        linhas.append(f"Aprovados fora do ranking exibido (abaixo da posição {n_exibidos}): {lista}")
+    return linhas
 
 
 def alocar_aporte(caixa: float, candidatos: list[str],
@@ -508,8 +585,11 @@ def main() -> None:
     data_atual = datas[-1]
     # Scanner atual: ranking com o último mês fechado, não com dado parcial do mês corrente.
     sinal_atual = datas[-2] if len(datas) > 1 else data_atual
-    ranking = selecionar(raw, adj, sinais, sinal_atual, max(args.top * 3, 10))
+    n_ranking = max(args.top * 3, 10)
+    ranking = selecionar(raw, adj, sinais, sinal_atual, n_ranking)
     ranking.to_csv(f"{args.saida}_ranking.csv", index=False, encoding="utf-8-sig")
+    diagnostico = diagnosticar(raw, adj, sinais, sinal_atual, UNIVERSO)
+    diagnostico.to_csv(f"{args.saida}_diagnostico.csv", index=False, encoding="utf-8-sig")
 
     curva, operacoes = backtest(raw, adj, div, args.aporte, args.top)
     resumo = pd.DataFrame()
@@ -561,8 +641,10 @@ def main() -> None:
             "retorno_preco_12m_pct": lambda x: f"{x:.2f}%",
             "score": lambda x: f"{x:.3f}",
         }))
+    print()
+    print("\n".join(formatar_diagnostico(diagnostico, sinal_atual, n_ranking)))
     print(f"\nArquivos gerados: {args.saida}_ranking.csv, {args.saida}_backtest.csv, "
-          f"{args.saida}_operacoes.csv, {args.saida}_comparacao.csv")
+          f"{args.saida}_operacoes.csv, {args.saida}_comparacao.csv, {args.saida}_diagnostico.csv")
     print("O script não envia ordens. Revise os dados e os fundamentos antes de investir.")
 
 

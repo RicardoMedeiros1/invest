@@ -6,3 +6,4 @@ __pycache__/
 *_backtest.csv
 *_operacoes.csv
 *_comparacao.csv
+*_diagnostico.csv
