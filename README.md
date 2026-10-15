@@ -33,13 +33,13 @@ Abre no navegador um relatório (e mostra o mesmo no terminal) com:
 - **As melhores no passado**, por ano e nos últimos 12 meses: o que o scanner teria escolhido em cada momento, com os dados da época.
 - **Custos das corretoras**, de fontes públicas (arquivo `corretoras.py`, com a data da pesquisa e o link de cada fonte). Tarifas mudam: confirme na tabela oficial antes de abrir conta. O preço de uma ação ou FII é o mesmo em qualquer corretora; o que muda são taxas, aplicativo e atendimento.
 
-Opções: `--valor` (quanto você investe por mês), `--ativos` (quantos no plano, padrão 5), `--fiis` (quantos deles são FIIs, padrão 0), `--meses` (meses do plano, padrão 3), `--sem-abrir` (não abre o navegador). Gera `carteira_simples.html` e `carteira_simples.csv`. Usa o mesmo filtro do scanner, então os dois sempre concordam sobre quem está aprovado. Os preços diários vêm do Yahoo Finance e podem ter alguns minutos de atraso: confira a cotação no aplicativo da corretora antes de comprar.
+Opções: `--valor` (quanto você investe por mês), `--ativos` (quantos no plano, padrão 5), `--fiis` (quantos deles são FIIs, padrão 0), `--meses` (meses do plano, padrão 3), `--sem-abrir` (não abre o navegador). Atualiza a planilha `carteira.xlsx` (veja "Uma só planilha" abaixo) e o relatório `carteira.html`, sempre com esses mesmos nomes. Usa o mesmo filtro do scanner, então os dois sempre concordam sobre quem está aprovado. Os preços diários vêm do Yahoo Finance e podem ter alguns minutos de atraso: confira a cotação no aplicativo da corretora antes de comprar.
 
 ## Uso do scanner completo
 
 ```powershell
 python scanner_dividendos_b3.py --anos 8 --aporte 200 --top 5
-python scanner_dividendos_b3.py --anos 10 --aporte 200 --top 5 --saida minha_carteira
+python scanner_dividendos_b3.py --anos 10 --aporte 200 --top 5 --saida minha_planilha   # outro nome de planilha (use o mesmo sempre)
 python scanner_dividendos_b3.py --top 5 --fiis 3   # 2 ações + 3 FIIs entre os 5 escolhidos
 python scanner_dividendos_b3.py --sem-cota         # os 5 melhores do ranking geral, sem vagas por classe
 python scanner_dividendos_b3.py --sem-benchmark    # não baixa CDI nem ETFs de referência
@@ -47,15 +47,24 @@ python scanner_dividendos_b3.py --sem-benchmark    # não baixa CDI nem ETFs de 
 
 O período simulado é menor que o baixado, porque os filtros exigem 36 meses de histórico. A lista de ativos (`ACOES` e `FIIS`) e os parâmetros ficam no início do arquivo.
 
-Arquivos gerados (prefixo `resultado_dividendos`, ou o valor de `--saida`):
+### Uma só planilha
 
-| Arquivo | Conteúdo |
-|---|---|
-| `*_ranking.csv` | Ativos aprovados no último mês fechado, com posição no ranking geral, classe (ação ou FII), marca dos escolhidos para o próximo aporte (`escolhido_hoje`), yield de 12 meses, períodos com proventos, retorno de preço em 12 meses e pontuação |
-| `*_backtest.csv` | Patrimônio mensal, total aportado, caixa, ganho/perda, ativos mantidos, quantidade de elegíveis e os selecionados, valor das posições em ações e em FIIs (`valor_posicoes_acoes`, `valor_posicoes_fiis`), mais uma coluna `valor_*` por benchmark |
-| `*_operacoes.csv` | Compras dos aportes e vendas por saída dos filtros (coluna `observacao` marca vendas feitas pelo último preço conhecido) |
-| `*_diagnostico.csv` | Situação de cada ativo do universo no último mês fechado: aprovado (com a posição no ranking) ou excluído (com os motivos) |
-| `*_comparacao.csv` | Valor final, ganho, XIRR e drawdown da estratégia e de cada benchmark, e a diferença de XIRR em pontos percentuais |
+Tudo vai para **um único arquivo, `carteira.xlsx`**, com uma aba para cada coisa. Ele é sempre o mesmo: cada execução atualiza as abas que produz e **mantém as outras**, então você nunca acumula arquivos. O scanner e o painel simples gravam na mesma planilha (o nome padrão é `carteira`; mude com `--saida`, usando sempre o mesmo).
+
+| Aba | De onde vem | Conteúdo |
+|---|---|---|
+| Melhores agora, Quanto subiu, Plano de compra, Passado, Corretoras, Todos os ativos | painel simples | O mesmo do relatório, em tabelas que você pode filtrar e ordenar no Excel |
+| Ranking | scanner | Ativos aprovados no último mês fechado, com posição no ranking geral, classe (ação ou FII), marca dos escolhidos para o próximo aporte (`escolhido_hoje`), yield de 12 meses, períodos com proventos, retorno de preço em 12 meses e pontuação |
+| Diagnóstico | scanner | Situação de cada ativo do universo: aprovado (com a posição no ranking) ou excluído (com os motivos) |
+| Comparação | scanner | Valor final, ganho, XIRR e drawdown da estratégia e de cada benchmark, e a diferença de XIRR em pontos percentuais |
+| Backtest | scanner | Patrimônio mensal, total aportado, caixa, ganho/perda, ativos mantidos, quantidade de elegíveis e os selecionados, valor das posições em ações e em FIIs, mais uma coluna `valor_*` por benchmark |
+| Operações | scanner | Compras dos aportes e vendas por saída dos filtros (coluna `observacao` marca vendas feitas pelo último preço conhecido) |
+| Histórico | scanner | **Uma linha por execução**: quando rodou, a configuração (por exemplo, "5 ativos: 3 ações + 2 FIIs"), retorno por ano, maior queda, valor final, peso médio de FIIs e o retorno do IBOV. Serve para comparar versões na mesma planilha, sem criar arquivos novos |
+
+- **Feche o arquivo no Excel antes de rodar.** O Windows não deixa o programa gravar numa planilha aberta. Nesse caso o resultado aparece no terminal e o programa avisa para fechar o arquivo e rodar de novo.
+- A aba Histórico só cresce; para recomeçar, apague essa aba (ou o arquivo) no Excel.
+- Os números saem arredondados a 2 casas (3 nas notas).
+- Se você tem arquivos de versões antigas (`resultado_*.csv`, `carteira_simples.csv`), eles não são mais usados e podem ser apagados. No PowerShell, dentro da pasta `invest`, confira primeiro com `dir resultado_*, carteira_simples.*` e depois apague com `Remove-Item resultado_*.csv, carteira_simples.csv`.
 
 ## XIRR, drawdown e benchmarks
 
@@ -89,7 +98,7 @@ Pontuação: consistência dos proventos (45%), proximidade de um yield de refer
 
 ### Diagnóstico de exclusão
 
-O ranking mostra só os melhores aprovados. O diagnóstico responde à pergunta contrária: *por que este ativo não aparece?* Ele lista cada ativo da lista que ficou de fora e **todos** os filtros que reprovou (não só o primeiro), por exemplo `yield de 12m 2.10% abaixo do mínimo de 3.0%` ou `proventos caíram para 33% do período anterior (mínimo 50%)`. Também aparecem os ativos que nem foram baixados (`sem dados do Yahoo`), os sem cotação no mês, os com menos de 36 meses de histórico e os aprovados que ficaram abaixo da posição exibida no ranking. O arquivo `*_diagnostico.csv` traz as métricas de todos, inclusive dos excluídos. O ranking e o diagnóstico usam a mesma função de decisão, então não podem divergir.
+O ranking mostra só os melhores aprovados. O diagnóstico responde à pergunta contrária: *por que este ativo não aparece?* Ele lista cada ativo da lista que ficou de fora e **todos** os filtros que reprovou (não só o primeiro), por exemplo `yield de 12m 2.10% abaixo do mínimo de 3.0%` ou `proventos caíram para 33% do período anterior (mínimo 50%)`. Também aparecem os ativos que nem foram baixados (`sem dados do Yahoo`), os sem cotação no mês, os com menos de 36 meses de histórico e os aprovados que ficaram abaixo da posição exibida no ranking. A aba Diagnóstico traz as métricas de todos, inclusive dos excluídos. O ranking e o diagnóstico usam a mesma função de decisão, então não podem divergir.
 
 ## Regras de compra, manutenção e venda (como implementadas)
 

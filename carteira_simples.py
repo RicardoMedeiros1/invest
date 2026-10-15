@@ -7,7 +7,8 @@ Painel simples da carteira, em linguagem direta:
   - um plano de compra mês a mês, só com unidades inteiras;
   - quais eram as melhores no passado, por mês e por ano;
   - os custos das corretoras (pesquisados em fontes públicas, ver corretoras.py).
-Usa o mesmo filtro do scanner (scanner_dividendos_b3.py). Gera um relatório HTML e um CSV. Não envia ordens.
+Usa o mesmo filtro do scanner (scanner_dividendos_b3.py). Atualiza a planilha carteira.xlsx (sempre o mesmo
+arquivo) e o relatório carteira.html. Não envia ordens.
 Uso: python carteira_simples.py --valor 200
 """
 
@@ -25,6 +26,7 @@ import yfinance as yf
 
 import scanner_dividendos_b3 as sc
 from corretoras import AVISO as AVISO_CORRETORAS, CORRETORAS, PESQUISADO_EM
+from planilha import atualizar_planilha, caminho_da_planilha
 
 DIAS_DIARIOS = 430   # histórico diário baixado: 12 meses com folga
 N_ACOES = 5          # quantas ações aparecem em "as melhores agora"
@@ -211,6 +213,40 @@ def montar_painel(tabela: pd.DataFrame, escolhidos: list[str], historico: dict[p
     }
 
 
+def abas_do_painel(p: dict, tabela: pd.DataFrame) -> dict[str, pd.DataFrame]:
+    """As abas que o painel grava na planilha (nomes de coluna em português, ticker sem o sufixo .SA)."""
+    melhores = pd.concat([p["melhores_acoes"], p["melhores_fiis"]], ignore_index=True)
+    abas = {"Melhores agora": pd.DataFrame({
+        "Classe": melhores["classe"], "Posição no ranking": melhores["posicao"],
+        "Ativo": melhores["ticker"].map(nome), "Preço (R$)": melhores["preco"],
+        "Dividendos em 12 meses (%)": melhores["dy_12m_pct"], "Dividendo por unidade (R$)": melhores["dividendo_12m"],
+        "Unidades que cabem no aporte": melhores["cotas"], "Custo dessas unidades (R$)": melhores["custo"]})}
+    linhas = [{"Período": rotulo, "Posição": i, "Ativo": nome(r.ticker), "Variação do preço (%)": getattr(r, coluna)}
+              for chave, coluna, rotulo in PERIODOS for i, r in enumerate(p["por_periodo"][chave].itertuples(), start=1)]
+    abas["Quanto subiu"] = pd.DataFrame(linhas, columns=["Período", "Posição", "Ativo", "Variação do preço (%)"])
+    abas["Plano de compra"] = pd.DataFrame(
+        [{"Mês": m["mes"], "Comprar": _compras_texto(m["compras"]) or "nenhuma compra (guarda o caixa)",
+          "Gasto (R$)": m["gasto"], "Sobra (R$)": m["sobra"]} for m in p["plano"]],
+        columns=["Mês", "Comprar", "Gasto (R$)", "Sobra (R$)"])
+    passado = [{"Tipo": "Ano", "Período": str(ano), "Escolhidas": ", ".join(f"{nome(t)} ({n})" for t, n in d["top"])}
+               for ano, d in p["passado_anos"].items()]
+    passado += [{"Tipo": "Mês", "Período": f"{d:%Y-%m}", "Escolhidas": ", ".join(nome(t) for t in picks)}
+                for d, picks in p["passado_meses"]]
+    abas["Passado"] = pd.DataFrame(passado, columns=["Tipo", "Período", "Escolhidas"])
+    abas["Corretoras"] = pd.DataFrame(
+        [{"Corretora": c["nome"], "Corretagem": c["corretagem"], "Custódia": c["custodia"], "Atenção": c["atencao"],
+          "Fonte": c["fonte"], "Pesquisado em": PESQUISADO_EM} for c in CORRETORAS])
+    todos = tabela.copy()
+    todos["ticker"] = todos["ticker"].map(nome)
+    todos["aprovado"] = todos["aprovado"].map({True: "sim", False: "não"})
+    abas["Todos os ativos"] = todos.rename(columns={
+        "ticker": "Ativo", "classe": "Classe", "preco": "Preço (R$)", "dia_pct": "Último pregão (%)", "mes_pct": "Último mês (%)",
+        "ano_pct": "12 meses (%)", "dividendo_12m": "Dividendo em 12 meses (R$)", "dy_12m_pct": "Dividendos em 12 meses (%)",
+        "aprovado": "Passou nos filtros", "posicao": "Posição no ranking", "nota": "Nota do scanner",
+        "cotas": "Unidades que cabem no aporte", "custo": "Custo dessas unidades (R$)"})
+    return abas
+
+
 def _compras_texto(compras: dict[str, int]) -> str:
     return " + ".join(f"{n} {nome(t)}" for t, n in compras.items())
 
@@ -369,7 +405,8 @@ def main() -> None:
     parser.add_argument("--fiis", type=int, default=0, help="Quantos desses ativos são FIIs (padrão: 0, só ações).")
     parser.add_argument("--meses", type=int, default=3, help="Quantos meses mostrar no plano de compra (padrão: 3).")
     parser.add_argument("--anos", type=int, default=8, help="Anos de histórico para o filtro e o passado (padrão: 8).")
-    parser.add_argument("--saida", default="carteira_simples", help="Prefixo dos arquivos gerados (.html e .csv).")
+    parser.add_argument("--saida", default="carteira",
+                        help="Nome da planilha (.xlsx) e do relatório (.html), sem extensão (padrão: carteira). Sempre os mesmos arquivos.")
     parser.add_argument("--sem-abrir", action="store_true", help="Não abre o relatório no navegador.")
     args = parser.parse_args()
     if args.valor <= 0 or args.ativos < 1 or args.meses < 1 or args.anos < 4:
@@ -392,15 +429,18 @@ def main() -> None:
     painel = montar_painel(tabela, escolhidos, historico, args.valor, args.meses, data)
 
     print("\n" + texto_painel(painel))
-    arquivo_html, arquivo_csv = Path(f"{args.saida}.html"), Path(f"{args.saida}.csv")
+    planilha = caminho_da_planilha(args.saida)
+    arquivo_html = planilha.with_suffix(".html")
     arquivo_html.write_text(html_painel(painel), encoding="utf-8")
-    tabela.to_csv(arquivo_csv, index=False, encoding="utf-8-sig")
-    print(f"\nRelatório gerado: {arquivo_html} (tabela completa em {arquivo_csv})")
+    print(f"\nRelatório atualizado: {arquivo_html}")
     if not args.sem_abrir:
         try:
             webbrowser.open(arquivo_html.resolve().as_uri())
         except Exception:
             print("Não consegui abrir o navegador; abra o arquivo .html com um duplo clique.")
+    # A planilha vem por último: se ela estiver aberta no Excel, o relatório acima já foi gerado.
+    atualizar_planilha(planilha, abas_do_painel(painel, tabela))
+    print(f"Planilha atualizada: {planilha} (é sempre o mesmo arquivo; feche-o no Excel antes de rodar de novo).")
 
 
 if __name__ == "__main__":

@@ -9,3 +9,5 @@ __pycache__/
 *_diagnostico.csv
 carteira_simples.html
 carteira_simples.csv
+*.xlsx
+carteira.html

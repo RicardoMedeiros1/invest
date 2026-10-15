@@ -6,7 +6,7 @@ import pytest
 import carteira_simples as cs
 import corretoras
 import scanner_dividendos_b3 as sc
-from test_scanner import TickerFalso, mercado, ranking_fixo
+from test_scanner import TickerFalso, cdi_diario, mercado, ranking_fixo, rodar_main
 
 HOJE = pd.Timestamp("2026-10-15")
 
@@ -199,6 +199,10 @@ def test_resumo_por_ano_conta_meses_e_desempata_por_nome():
 # ---------- painel em texto e em HTML ----------
 
 def painel_de_teste():
+    return painel_e_tabela()[0]
+
+
+def painel_e_tabela():
     ordem = ["PETR4.SA", "CXSE3.SA", "ABEV3.SA", "WEGE3.SA", "ISAE4.SA"]
     precos = {"PETR4.SA": 49.12, "CXSE3.SA": 19.88, "ABEV3.SA": 15.36, "WEGE3.SA": 49.46, "ISAE4.SA": 27.59}
     fech = {t: serie_diaria(p) for t, p in precos.items()}
@@ -207,7 +211,7 @@ def painel_de_teste():
                             "retorno_preco_12m_pct": 5.0, "score": np.linspace(0.95, 0.85, 5)})
     tabela = cs.montar_tabela(fech, prov, ranking, 200.0)
     hist = {pd.Timestamp("2026-08-31"): ordem, pd.Timestamp("2026-09-30"): ordem}
-    return cs.montar_painel(tabela, ordem, hist, 200.0, 2, HOJE)
+    return cs.montar_painel(tabela, ordem, hist, 200.0, 2, HOJE), tabela
 
 
 def test_texto_do_painel_traz_as_secoes_e_o_plano_em_reais():
@@ -287,7 +291,7 @@ def rodar_painel(monkeypatch, tmp_path, *extra):
     cs.main()
 
 
-def test_main_gera_html_e_csv_e_mostra_o_painel(monkeypatch, tmp_path, capsys):
+def test_main_atualiza_a_planilha_e_o_html_e_mostra_o_painel(monkeypatch, tmp_path, capsys):
     abertos = []
     monkeypatch.setattr(cs.webbrowser, "open", lambda url: abertos.append(url))
     rodar_painel(monkeypatch, tmp_path, "--sem-abrir", "--ativos", "3")
@@ -295,10 +299,38 @@ def test_main_gera_html_e_csv_e_mostra_o_painel(monkeypatch, tmp_path, capsys):
     saida = capsys.readouterr().out
     for secao in ("AS MELHORES AGORA", "QUANTO CADA UM SUBIU", "PLANO DOS PRIMEIROS 3 MESES", "AS MELHORES NO PASSADO", "CUSTOS DAS CORRETORAS"):
         assert secao in saida
-    tabela = pd.read_csv(tmp_path / "p.csv")
-    assert tabela.columns.tolist() == cs.COLUNAS_TABELA and len(tabela) == 6 and tabela.ticker.str.endswith(".SA").all()
-    pagina = (tmp_path / "p.html").read_text(encoding="utf-8")
-    assert "Sua carteira em poucos passos" in pagina and "Relatório gerado" in saida
+    assert sorted(f.name for f in tmp_path.iterdir()) == ["p.html", "p.xlsx"]      # só dois arquivos, sem CSV
+    abas = pd.read_excel(tmp_path / "p.xlsx", sheet_name=None)
+    assert set(abas) == {"Melhores agora", "Quanto subiu", "Plano de compra", "Passado", "Corretoras", "Todos os ativos"}
+    assert len(abas["Todos os ativos"]) == 6 and not abas["Todos os ativos"]["Ativo"].str.contains(".SA", regex=False).any()
+    assert "Sua carteira em poucos passos" in (tmp_path / "p.html").read_text(encoding="utf-8")
+    assert "Planilha atualizada" in saida and "Relatório atualizado" in saida
+
+
+def test_abas_do_painel_em_portugues_e_sem_o_sufixo_do_yahoo():
+    painel, tabela = painel_e_tabela()
+    abas = cs.abas_do_painel(painel, tabela)
+    assert list(abas) == ["Melhores agora", "Quanto subiu", "Plano de compra", "Passado", "Corretoras", "Todos os ativos"]
+    for nome_aba, df in abas.items():
+        assert not df.astype(str).apply(lambda col: col.str.contains(".SA", regex=False)).any().any(), nome_aba
+    assert abas["Melhores agora"]["Ativo"].tolist() == ["PETR4", "CXSE3", "ABEV3", "WEGE3", "ISAE4"]
+    assert abas["Melhores agora"]["Unidades que cabem no aporte"].tolist()[0] == 4
+    plano = abas["Plano de compra"]
+    assert plano["Comprar"].iloc[0] == "1 PETR4 + 2 CXSE3 + 2 ABEV3 + 1 WEGE3 + 1 ISAE4"
+    assert plano["Gasto (R$)"].iloc[0] == pytest.approx(196.65) and plano["Sobra (R$)"].iloc[0] == pytest.approx(3.35)
+    assert set(abas["Passado"]["Tipo"]) == {"Ano", "Mês"} and len(abas["Corretoras"]) == len(cs.CORRETORAS)
+    assert set(abas["Quanto subiu"]["Período"]) == {"No último pregão", "No último mês", "Em 12 meses"}
+    assert abas["Todos os ativos"]["Passou nos filtros"].eq("sim").all()
+
+
+def test_abas_do_painel_sem_nenhum_aprovado_nao_quebra():
+    fech = {"PETR4.SA": serie_diaria(49.12)}
+    vazio = pd.DataFrame(columns=["ticker", "preco_referencia", "dy_12m_pct", "anos_com_div_ult_3", "retorno_preco_12m_pct", "score"])
+    tabela = cs.montar_tabela(fech, {"PETR4.SA": pd.Series(dtype=float)}, vazio, 200.0)
+    painel = cs.montar_painel(tabela, [], {}, 200.0, 3, HOJE)
+    abas = cs.abas_do_painel(painel, tabela)
+    assert abas["Melhores agora"].empty and abas["Plano de compra"].empty and abas["Quanto subiu"].empty
+    assert abas["Todos os ativos"]["Passou nos filtros"].tolist() == ["não"]
 
 
 def test_main_abre_o_navegador_a_menos_que_peca_para_nao(monkeypatch, tmp_path):
@@ -320,3 +352,57 @@ def test_main_recusa_argumentos_invalidos(monkeypatch, tmp_path):
         rodar_painel(monkeypatch, tmp_path, "--valor", "0")
     with pytest.raises(SystemExit, match="--fiis"):
         rodar_painel(monkeypatch, tmp_path, "--ativos", "3", "--fiis", "4")
+
+
+# ---------- uma só planilha para tudo ----------
+
+def test_scanner_e_painel_atualizam_a_mesma_planilha(monkeypatch, tmp_path):
+    monkeypatch.setattr(sc, "baixar_cdi", cdi_diario)
+    rodar_main(monkeypatch, tmp_path, "--sem-cota")                                 # scanner, versão A: tmp/r.xlsx
+    rodar_painel(monkeypatch, tmp_path, "--saida", str(tmp_path / "r"), "--sem-abrir", "--ativos", "3")
+    rodar_main(monkeypatch, tmp_path)                                               # scanner de novo, versão B
+    assert sorted(f.name for f in tmp_path.iterdir()) == ["r.html", "r.xlsx"]       # continua tudo em um arquivo (mais o relatório)
+    abas = pd.read_excel(tmp_path / "r.xlsx", sheet_name=None)
+    assert set(abas) == {"Melhores agora", "Quanto subiu", "Plano de compra", "Passado", "Corretoras", "Todos os ativos",
+                         "Ranking", "Diagnóstico", "Comparação", "Backtest", "Operações", "Histórico"}
+    assert pd.ExcelFile(tmp_path / "r.xlsx").sheet_names[0] == "Melhores agora"     # ordem combinada
+
+
+def test_historico_guarda_uma_linha_por_execucao_do_scanner(monkeypatch, tmp_path):
+    monkeypatch.setattr(sc, "baixar_cdi", cdi_diario)
+    rodar_main(monkeypatch, tmp_path, "--sem-cota")
+    rodar_main(monkeypatch, tmp_path)
+    rodar_main(monkeypatch, tmp_path, "--fiis", "0")
+    h = pd.read_excel(tmp_path / "r.xlsx", sheet_name="Histórico")
+    assert h.configuracao.tolist() == ["3 melhores do ranking geral (sem cota)", "3 ativos: 2 ações + 1 FIIs", "3 ativos: 3 ações + 0 FIIs"]
+    assert h.aporte_mensal.eq(200).all() and h.executado_em.str.match(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}").all()
+    ultima = pd.read_excel(tmp_path / "r.xlsx", sheet_name="Comparação").set_index("nome")
+    assert h.retorno_por_ano_pct.iloc[-1] == pytest.approx(ultima.loc["Estratégia", "xirr_aa_pct"], abs=0.01)
+    assert h.ibov_retorno_por_ano_pct.iloc[-1] == pytest.approx(ultima.loc["IBOV (BOVA11)", "xirr_aa_pct"], abs=0.01)
+    assert h.maior_queda_pct.iloc[-1] <= 0 and h.valor_final.iloc[-1] > 0 and h.fiis_na_carteira_media_pct.notna().all()
+
+
+def test_historico_sem_benchmark_deixa_a_coluna_em_branco(monkeypatch, tmp_path):
+    rodar_main(monkeypatch, tmp_path, "--sem-benchmark")
+    h = pd.read_excel(tmp_path / "r.xlsx", sheet_name="Histórico")
+    assert len(h) == 1 and h.ibov_retorno_por_ano_pct.isna().all() and h.retorno_por_ano_pct.notna().all()
+
+
+def test_scanner_mostra_o_resultado_mesmo_com_a_planilha_aberta_no_excel(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(sc, "baixar_cdi", cdi_diario)
+
+    def bloqueado(*a, **k):
+        raise SystemExit("Não consegui gravar r.xlsx. Se ele estiver aberto no Excel, feche-o e rode de novo.")
+    monkeypatch.setattr(sc, "atualizar_planilha", bloqueado)
+    with pytest.raises(SystemExit, match="feche"):
+        rodar_main(monkeypatch, tmp_path)
+    assert "RESULTADO DO BACKTEST" in capsys.readouterr().out                      # o resultado já tinha sido mostrado
+
+
+def test_painel_gera_o_relatorio_mesmo_com_a_planilha_aberta_no_excel(monkeypatch, tmp_path, capsys):
+    def bloqueado(*a, **k):
+        raise SystemExit("Não consegui gravar p.xlsx. Se ele estiver aberto no Excel, feche-o e rode de novo.")
+    monkeypatch.setattr(cs, "atualizar_planilha", bloqueado)
+    with pytest.raises(SystemExit, match="Excel"):
+        rodar_painel(monkeypatch, tmp_path, "--sem-abrir", "--ativos", "3")
+    assert (tmp_path / "p.html").exists() and "AS MELHORES AGORA" in capsys.readouterr().out

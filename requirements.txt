@@ -1,3 +1,4 @@
 yfinance[repair]
 pandas>=2.2
 numpy
+openpyxl

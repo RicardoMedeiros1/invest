@@ -18,6 +18,8 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 
+from planilha import atualizar_planilha, caminho_da_planilha
+
 warnings.filterwarnings("ignore", category=FutureWarning)
 
 # Lista inicial EDITÁVEL. Não representa recomendação de compra nem todo o mercado.
@@ -628,6 +630,21 @@ def avaliar_benchmarks(curva: pd.DataFrame, inicio: str, usar_benchmarks: bool =
     return curva, resumir(curva, series, datas_fluxo)
 
 
+def linha_historico(args: argparse.Namespace, n_fiis: int | None, curva: pd.DataFrame, resumo: pd.DataFrame) -> dict:
+    """Uma linha para a aba Histórico: o que foi rodado e o resultado, para comparar versões na mesma planilha."""
+    configuracao = (f"{args.top} ativos: {args.top - n_fiis} ações + {n_fiis} FIIs" if n_fiis is not None
+                    else f"{args.top} melhores do ranking geral (sem cota)")
+    estrategia = resumo.iloc[0]
+    ibov = resumo.loc[resumo["nome"].str.startswith("IBOV"), "xirr_aa_pct"]
+    mix = composicao(curva)
+    return {"executado_em": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M"), "configuracao": configuracao,
+            "aporte_mensal": args.aporte, "periodo": f"{curva['data'].iloc[0]} a {curva['data'].iloc[-1]}",
+            "retorno_por_ano_pct": estrategia["xirr_aa_pct"], "maior_queda_pct": estrategia["max_drawdown_pct"],
+            "valor_final": estrategia["valor_final"],
+            "fiis_na_carteira_media_pct": mix["fiis_media_pct"] if mix else np.nan,
+            "ibov_retorno_por_ano_pct": float(ibov.iloc[0]) if len(ibov) else np.nan}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Scanner conservador de dividendos B3 + backtest.")
     parser.add_argument("--anos", type=int, default=8, help="Anos de histórico para baixar (padrão: 8).")
@@ -638,7 +655,8 @@ def main() -> None:
                              "(padrão: 40%% das vagas, 2 de 5).")
     parser.add_argument("--sem-cota", action="store_true",
                         help="Escolhe os --top melhores do ranking geral, sem reservar vagas por classe.")
-    parser.add_argument("--saida", default="resultado_dividendos", help="Prefixo dos arquivos de saída.")
+    parser.add_argument("--saida", default="carteira",
+                        help="Nome da planilha, sem .xlsx (padrão: carteira). É sempre o mesmo arquivo, atualizado a cada execução.")
     parser.add_argument("--sem-benchmark", action="store_true",
                         help="Não baixa CDI nem ETFs de referência; calcula só o XIRR da estratégia.")
     args = parser.parse_args()
@@ -663,9 +681,7 @@ def main() -> None:
     escolhidos = escolher_candidatos(ordem, args.top, n_fiis)
     posicao = {t: i + 1 for i, t in enumerate(ordem)}
     ranking = tabela_ranking(ranking_geral, escolhidos, n_ranking)
-    ranking.to_csv(f"{args.saida}_ranking.csv", index=False, encoding="utf-8-sig")
     diagnostico = diagnosticar(raw, adj, sinais, sinal_atual, UNIVERSO)
-    diagnostico.to_csv(f"{args.saida}_diagnostico.csv", index=False, encoding="utf-8-sig")
 
     curva, operacoes = backtest(raw, adj, div, args.aporte, args.top, cota_fiis=n_fiis)
     # Com cota por classe, o benchmark misto tem o mesmo peso das vagas (ex.: 3 de 5 = 60% bolsa).
@@ -673,9 +689,6 @@ def main() -> None:
     resumo = pd.DataFrame()
     if not curva.empty:
         curva, resumo = avaliar_benchmarks(curva, inicio, usar_benchmarks=not args.sem_benchmark, mistos=mistos)
-    curva.to_csv(f"{args.saida}_backtest.csv", index=False, encoding="utf-8-sig")
-    operacoes.to_csv(f"{args.saida}_operacoes.csv", index=False, encoding="utf-8-sig")
-    resumo.to_csv(f"{args.saida}_comparacao.csv", index=False, encoding="utf-8-sig")
 
     if not curva.empty:
         final = float(curva["valor_carteira"].iloc[-1])
@@ -725,9 +738,13 @@ def main() -> None:
         }))
     print()
     print("\n".join(formatar_diagnostico(diagnostico, sinal_atual, n_ranking)))
-    print(f"\nArquivos gerados: {args.saida}_ranking.csv, {args.saida}_backtest.csv, "
-          f"{args.saida}_operacoes.csv, {args.saida}_comparacao.csv, {args.saida}_diagnostico.csv")
     print("O script não envia ordens. Revise os dados e os fundamentos antes de investir.")
+    # A planilha é gravada por último: se ela estiver aberta no Excel, o resultado acima já foi mostrado.
+    abas = {"Ranking": ranking, "Diagnóstico": diagnostico, "Comparação": resumo, "Backtest": curva, "Operações": operacoes}
+    historico = linha_historico(args, n_fiis, curva, resumo) if not curva.empty else None
+    caminho = atualizar_planilha(caminho_da_planilha(args.saida), abas, historico)
+    print(f"\nPlanilha atualizada: {caminho} (abas: {', '.join(abas)} e Histórico). "
+          "É sempre o mesmo arquivo; feche-o no Excel antes de rodar de novo.")
 
 
 if __name__ == "__main__":

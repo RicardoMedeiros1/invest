@@ -416,7 +416,7 @@ def test_avaliar_benchmarks_aceita_misto_proprio(monkeypatch):
 def test_main_sem_cota_volta_ao_ranking_geral_e_ao_misto_50_50(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(sc, "baixar_cdi", cdi_diario)
     rodar_main(monkeypatch, tmp_path, "--sem-cota")
-    comparacao = pd.read_csv(tmp_path / "r_comparacao.csv")
+    comparacao = aba(tmp_path, "Comparação")
     assert "Misto 50/50 (IBOV+IFIX)" in comparacao.nome.tolist()
     assert "os 3 melhores do ranking geral" in capsys.readouterr().out
 
@@ -430,7 +430,7 @@ def test_main_aceita_fiis_explicito(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(sc, "baixar_cdi", cdi_diario)
     rodar_main(monkeypatch, tmp_path, "--fiis", "0")
     assert "(3 ações + 0 FIIs;" in capsys.readouterr().out
-    assert not any(n.startswith("Misto") for n in pd.read_csv(tmp_path / "r_comparacao.csv").nome)   # 100% ações: sem misto
+    assert not any(n.startswith("Misto") for n in aba(tmp_path, "Comparação").nome)   # 100% ações: sem misto
 
 
 # ---------- fluxo completo, offline ----------
@@ -458,6 +458,11 @@ def cdi_diario(inicio, fim, taxa_dia=0.0005):
     return pd.Series((1 + taxa_dia) ** np.arange(1, len(dias) + 1), index=dias)
 
 
+def aba(tmp_path, nome, arquivo="r.xlsx"):
+    """Lê uma aba da planilha única gerada pelo scanner."""
+    return pd.read_excel(tmp_path / arquivo, sheet_name=nome)
+
+
 def rodar_main(monkeypatch, tmp_path, *extra):
     monkeypatch.setattr(sc.yf, "Ticker", TickerFalso)
     monkeypatch.setattr(sc, "UNIVERSO", ["ITUB4.SA", "BBSE3.SA", "EGIE3.SA", "HGLG11.SA", "MXRF11.SA", "KNRI11.SA"])
@@ -468,10 +473,10 @@ def rodar_main(monkeypatch, tmp_path, *extra):
 def test_main_gera_os_csv_com_benchmarks(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(sc, "baixar_cdi", cdi_diario)
     rodar_main(monkeypatch, tmp_path)
-    curva = pd.read_csv(tmp_path / "r_backtest.csv")
-    ops = pd.read_csv(tmp_path / "r_operacoes.csv")
-    comparacao = pd.read_csv(tmp_path / "r_comparacao.csv")
-    assert (tmp_path / "r_ranking.csv").exists()
+    curva = aba(tmp_path, "Backtest")
+    ops = aba(tmp_path, "Operações")
+    comparacao = aba(tmp_path, "Comparação")
+    assert (tmp_path / "r.xlsx").exists()
     assert len(curva) > 12 and curva.total_aportado.iloc[-1] == 200 * len(curva)
     assert {"COMPRA_APORTE"} <= set(ops.tipo) and "observacao" in ops.columns
     assert comparacao.nome.tolist() == ["Estratégia", "CDI", "IBOV (BOVA11)", "IDIV (DIVO11)", "IFIX (XFIX11)", "Misto 67/33 (IBOV+IFIX)"]
@@ -483,15 +488,15 @@ def test_main_gera_os_csv_com_benchmarks(monkeypatch, tmp_path, capsys):
     assert "RESULTADO DO BACKTEST" in saida and "XIRR da estratégia" in saida and "COMPARAÇÃO COM BENCHMARKS" in saida
     assert "Maior drawdown (índice de retorno" in saida
     assert "ESCOLHIDOS PARA O PRÓXIMO APORTE (2 ações + 1 FIIs" in saida and "Compare com Misto 67/33" in saida
-    ranking = pd.read_csv(tmp_path / "r_ranking.csv")
+    ranking = aba(tmp_path, "Ranking")
     assert ranking.columns.tolist()[:4] == ["posicao", "ticker", "classe", "escolhido_hoje"]
     assert (ranking.escolhido_hoje == "sim").sum() == 3 and ranking[ranking.escolhido_hoje == "sim"].classe.value_counts().to_dict() == {"ação": 2, "FII": 1}
     assert "COMPOSIÇÃO DA CARTEIRA" in saida and "FIIs" in saida
     assert {"valor_posicoes_acoes", "valor_posicoes_fiis"} <= set(curva.columns)
-    diagnostico = pd.read_csv(tmp_path / "r_diagnostico.csv")
+    diagnostico = aba(tmp_path, "Diagnóstico")
     assert len(diagnostico) == 6 and diagnostico.columns.tolist() == sc.COLUNAS_DIAGNOSTICO
-    assert "DIAGNÓSTICO DE EXCLUSÃO" in saida and "r_diagnostico.csv" in saida
-    assert (curva.valor_posicoes_acoes + curva.valor_posicoes_fiis).to_numpy() == pytest.approx(curva.valor_posicoes.to_numpy())
+    assert "DIAGNÓSTICO DE EXCLUSÃO" in saida and "Planilha atualizada" in saida
+    assert (curva.valor_posicoes_acoes + curva.valor_posicoes_fiis).to_numpy() == pytest.approx(curva.valor_posicoes.to_numpy(), abs=0.02)   # planilha arredonda a 2 casas
 
 
 def test_main_sem_benchmark_nao_baixa_nada_alem_do_universo(monkeypatch, tmp_path):
@@ -499,9 +504,9 @@ def test_main_sem_benchmark_nao_baixa_nada_alem_do_universo(monkeypatch, tmp_pat
         raise AssertionError("não deveria baixar o CDI com --sem-benchmark")
     monkeypatch.setattr(sc, "baixar_cdi", proibido)
     rodar_main(monkeypatch, tmp_path, "--sem-benchmark")
-    comparacao = pd.read_csv(tmp_path / "r_comparacao.csv")
+    comparacao = aba(tmp_path, "Comparação")
     assert comparacao.nome.tolist() == ["Estratégia"] and comparacao.xirr_aa_pct.notna().all()
-    colunas = pd.read_csv(tmp_path / "r_backtest.csv").columns
+    colunas = aba(tmp_path, "Backtest").columns
     proprias = {"valor_carteira", "valor_posicoes", "valor_posicoes_acoes", "valor_posicoes_fiis"}
     assert [c for c in colunas if c.startswith("valor_") and c not in proprias] == []
 
