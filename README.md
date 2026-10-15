@@ -17,7 +17,25 @@ O `requirements.txt` instala `yfinance[repair]`, que inclui `scipy` e `scikit-le
 
 Se o PowerShell bloquear a ativação do ambiente virtual, use `.\.venv\Scripts\python.exe -m pip install -r requirements.txt` e execute os comandos abaixo com `.\.venv\Scripts\python.exe`.
 
-## Uso
+## Painel simples (comece por aqui)
+
+Para quem quer só o essencial, sem benchmarks nem XIRR:
+
+```powershell
+python carteira_simples.py --valor 200
+```
+
+Abre no navegador um relatório (e mostra o mesmo no terminal) com:
+
+- **As melhores agora**, ações e FIIs, na ordem da nota do scanner: preço, dividendos pagos nos últimos 12 meses e quantas unidades cabem no seu aporte.
+- **Quanto cada um subiu** no último pregão, no último mês e em 12 meses, entre os aprovados. O dia muda muito de um pregão para o outro; o mês e o ano dizem mais para quem investe a longo prazo.
+- **Plano dos primeiros meses**, só com unidades inteiras (na vida real não existe meia ação). O plano reforça sempre o ativo com menos dinheiro aplicado; se ele ainda não cabe no caixa (um FII de R$ 150 com aporte de R$ 200, por exemplo), guarda o caixa para o mês seguinte. Inclui uma estimativa de dividendos, que repete o rendimento do último ano e não é promessa.
+- **As melhores no passado**, por ano e nos últimos 12 meses: o que o scanner teria escolhido em cada momento, com os dados da época.
+- **Custos das corretoras**, de fontes públicas (arquivo `corretoras.py`, com a data da pesquisa e o link de cada fonte). Tarifas mudam: confirme na tabela oficial antes de abrir conta. O preço de uma ação ou FII é o mesmo em qualquer corretora; o que muda são taxas, aplicativo e atendimento.
+
+Opções: `--valor` (quanto você investe por mês), `--ativos` (quantos no plano, padrão 5), `--fiis` (quantos deles são FIIs, padrão 0), `--meses` (meses do plano, padrão 3), `--sem-abrir` (não abre o navegador). Gera `carteira_simples.html` e `carteira_simples.csv`. Usa o mesmo filtro do scanner, então os dois sempre concordam sobre quem está aprovado. Os preços diários vêm do Yahoo Finance e podem ter alguns minutos de atraso: confira a cotação no aplicativo da corretora antes de comprar.
+
+## Uso do scanner completo
 
 ```powershell
 python scanner_dividendos_b3.py --anos 8 --aporte 200 --top 5
@@ -102,4 +120,4 @@ pip install pytest
 python -m pytest
 ```
 
-Os testes são offline (dados sintéticos e respostas simuladas do Banco Central) e cobrem a contagem de proventos, o corte de proventos, os limites de peso, a regra de venda, o tratamento de ativos sem cotação, o XIRR, o drawdown, os benchmarks (inclusive o misto), a composição da carteira e o diagnóstico de exclusão.
+Os testes são offline (dados sintéticos e respostas simuladas do Banco Central) e cobrem o painel simples (variações, plano de compra, relatório) e a contagem de proventos, o corte de proventos, os limites de peso, a regra de venda, o tratamento de ativos sem cotação, o XIRR, o drawdown, os benchmarks (inclusive o misto), a composição da carteira e o diagnóstico de exclusão.
