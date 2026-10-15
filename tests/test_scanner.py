@@ -258,6 +258,37 @@ def test_main_sem_benchmark_nao_baixa_nada_alem_do_universo(monkeypatch, tmp_pat
     assert [c for c in colunas if c.startswith("valor_") and c not in proprias] == []
 
 
+def test_dependencia_ausente_para_na_hora_com_mensagem_clara(monkeypatch, capsys):
+    chamadas = []
+
+    class SemScipy:
+        def __init__(self, ticker):
+            chamadas.append(ticker)
+
+        def history(self, **kwargs):
+            raise ModuleNotFoundError("No module named 'scipy'")
+
+    monkeypatch.setattr(sc.yf, "Ticker", SemScipy)
+    with pytest.raises(RuntimeError, match="requirements.txt") as erro:
+        sc.baixar_dados(["ITUB4.SA", "VALE3.SA", "WEGE3.SA"], "2020-01-01")
+    assert "scipy" in str(erro.value)
+    assert chamadas == ["ITUB4.SA"]                      # não insiste nos demais tickers
+    assert "[AVISO]" not in capsys.readouterr().out
+
+
+def test_falha_comum_de_um_ticker_continua_sendo_so_aviso(monkeypatch, capsys):
+    class Instavel(TickerFalso):
+        def history(self, **kwargs):
+            if self.ticker == "VALE3.SA":
+                raise ConnectionError("timeout")
+            return super().history(**kwargs)
+
+    monkeypatch.setattr(sc.yf, "Ticker", Instavel)
+    _, adj, _ = sc.baixar_dados(["ITUB4.SA", "VALE3.SA"], "2024-01-01")
+    assert list(adj.columns) == ["ITUB4.SA"]
+    assert "Falha ao baixar VALE3.SA" in capsys.readouterr().out
+
+
 # ---------- XIRR ----------
 
 def test_xirr_valores_conhecidos():

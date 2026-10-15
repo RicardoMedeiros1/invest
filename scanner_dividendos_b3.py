@@ -81,6 +81,10 @@ def baixar_dados(tickers: list[str], inicio: str) -> tuple[pd.DataFrame, pd.Data
             else:
                 dividendos[ticker] = pd.Series(0.0, index=brutos[ticker].index)
             print(f"[OK] {ticker}: {len(hist)} pregões")
+        except ImportError as exc:
+            # Módulo ausente falharia em todos os tickers (ex.: scipy, usado pelo repair=True).
+            raise RuntimeError(f"Falta uma dependência do yfinance ({exc}). "
+                               "Instale com: pip install -r requirements.txt") from exc
         except Exception as exc:
             print(f"[AVISO] Falha ao baixar {ticker}: {exc}")
     if not ajustados:

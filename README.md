@@ -13,6 +13,8 @@ python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
+O `requirements.txt` instala `yfinance[repair]`, que inclui `scipy` e `scikit-learn`: o script pede ao Yahoo que corrija erros de preço nos dados (`repair=True`) e isso exige esses módulos. Se aparecer `No module named 'scipy'` (ou `sklearn`), rode `pip install -r requirements.txt` de novo, com o ambiente virtual ativado.
+
 Se o PowerShell bloquear a ativação do ambiente virtual, use `.\.venv\Scripts\python.exe -m pip install -r requirements.txt` e execute os comandos abaixo com `.\.venv\Scripts\python.exe`.
 
 ## Uso
