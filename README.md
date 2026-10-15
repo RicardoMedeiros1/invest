@@ -47,7 +47,9 @@ A comparação coloca **os mesmos aportes, nas mesmas datas**, em cada referênc
 | IDIV (DIVO11) | Yahoo Finance, preço ajustado do ETF | Índice de dividendos; é um ETF recente, com histórico curto, e é ignorado (com aviso) se não cobrir todo o período do backtest |
 | IFIX (XFIX11) | Yahoo Finance, preço ajustado do ETF | Benchmark de FIIs: ETF que replica o IFIX (algumas fontes citam a versão IFIX-L, mais líquida), negociado desde nov/2020. Ignorado com aviso se o Yahoo não tiver o ticker |
 
-Um benchmark que não puder ser baixado também gera apenas um aviso, e o resto segue normalmente. A lista de ETFs fica em `BENCHMARKS_ETF`, no início do arquivo; para usar outra referência (por exemplo, outro ETF de FIIs), troque ou acrescente o ticker ali.
+| Misto 50/50 (IBOV+IFIX) | Combinação dos dois ETFs acima | Cada aporte é dividido meio a meio entre BOVA11 e XFIX11, **sem vender para rebalancear** (como a estratégia, que só compra); o peso de cada um deriva com o tempo. O patrimônio é a média dos patrimônios dos dois. Só entra se os dois existirem |
+
+Um benchmark que não puder ser baixado também gera apenas um aviso, e o resto segue normalmente. A lista de ETFs fica em `BENCHMARKS_ETF`, no início do arquivo; para usar outra referência (por exemplo, outro ETF de FIIs), troque ou acrescente o ticker ali. Os pesos e os componentes do misto ficam em `BENCHMARKS_MISTOS` (os pesos devem somar 1; dá para criar outros, como um misto 70/30).
 
 O **drawdown** (maior queda de um pico até o vale) é calculado sobre um **índice de retorno ponderado pelo tempo**, e não sobre o patrimônio. Os aportes empurram o patrimônio para cima e escondem parte da queda: num teste com 5 anos de aportes e uma queda de 30% em um mês, o patrimônio mostrava −28,3%, enquanto o índice de retorno mostra os −30,0% reais. O retorno de cada mês é `(patrimônio − aporte) / patrimônio do mês anterior − 1`; os custos de negociação ficam dentro do retorno, e o caixa parado rende zero. A mesma conta vale para a estratégia e para os benchmarks, então os números são comparáveis. Como os pontos são mensais, quedas dentro do mês não aparecem.
 
@@ -80,7 +82,7 @@ Não há regra de "comprar porque o preço caiu": uma queda pode ser oportunidad
 3. **Fundamentos:** os filtros não usam balanços disponíveis em cada data, então o ranking histórico pode não refletir o que se sabia na época.
 4. **Custos e tributação:** a taxa é uma estimativa. Impostos, spreads, liquidez e lotes fracionários não estão modelados.
 5. **Métricas:** o drawdown usa pontos mensais, então não captura quedas dentro do mês. Não há volatilidade nem outras medidas de risco.
-6. **Benchmarks:** todos sem imposto de renda (CDI bruto). O IBOV e o IFIX entram como ETFs, com a taxa de administração embutida. Não há um benchmark único para uma carteira mista de ações e FIIs; compare com os dois. O resultado depende muito do período: um backtest curto compara a estratégia com cada benchmark em um único ciclo de mercado.
+6. **Benchmarks:** todos sem imposto de renda (CDI bruto). O IBOV e o IFIX entram como ETFs, com a taxa de administração embutida. O misto 50/50 só é uma boa referência se a sua carteira tiver, de fato, algo perto de metade em ações e metade em FIIs. A estratégia não fixa essa proporção: ela depende do que passa nos filtros em cada mês. Confira a proporção real em `*_operacoes.csv` (compras por ticker) e, se ela for bem diferente, ajuste os pesos em `BENCHMARKS_MISTOS` ou compare com o IBOV e o IFIX separadamente. O resultado depende muito do período: um backtest curto compara a estratégia com cada benchmark em um único ciclo de mercado.
 7. **Dados do Yahoo Finance:** podem ter falhas e lacunas, principalmente em proventos de FIIs. Para FIIs, a CVM publica informes mensais estruturados.
 
 ## Testes
@@ -90,4 +92,4 @@ pip install pytest
 python -m pytest
 ```
 
-Os testes são offline (dados sintéticos e respostas simuladas do Banco Central) e cobrem a contagem de proventos, o corte de proventos, os limites de peso, a regra de venda, o tratamento de ativos sem cotação, o XIRR, o drawdown e os benchmarks.
+Os testes são offline (dados sintéticos e respostas simuladas do Banco Central) e cobrem a contagem de proventos, o corte de proventos, os limites de peso, a regra de venda, o tratamento de ativos sem cotação, o XIRR, o drawdown e os benchmarks (inclusive o misto).

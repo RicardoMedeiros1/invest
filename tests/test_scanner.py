@@ -194,9 +194,10 @@ def test_main_gera_os_csv_com_benchmarks(monkeypatch, tmp_path, capsys):
     assert (tmp_path / "r_ranking.csv").exists()
     assert len(curva) > 12 and curva.total_aportado.iloc[-1] == 200 * len(curva)
     assert {"COMPRA_APORTE"} <= set(ops.tipo) and "observacao" in ops.columns
-    assert comparacao.nome.tolist() == ["Estratégia", "CDI", "IBOV (BOVA11)", "IDIV (DIVO11)", "IFIX (XFIX11)"]
+    assert comparacao.nome.tolist() == ["Estratégia", "CDI", "IBOV (BOVA11)", "IDIV (DIVO11)", "IFIX (XFIX11)", "Misto 50/50 (IBOV+IFIX)"]
     assert comparacao.xirr_aa_pct.notna().all() and (comparacao.max_drawdown_pct <= 0).all()
-    assert {"valor_cdi", "valor_ibov_bova11", "valor_idiv_divo11", "valor_ifix_xfix11"} <= set(curva.columns)
+    assert {"valor_cdi", "valor_ibov_bova11", "valor_idiv_divo11", "valor_ifix_xfix11",
+            "valor_misto_50_50_ibov_ifix"} <= set(curva.columns)
     assert comparacao.total_aportado.eq(curva.total_aportado.iloc[-1]).all()
     saida = capsys.readouterr().out
     assert "RESULTADO DO BACKTEST" in saida and "XIRR da estratégia" in saida and "COMPARAÇÃO COM BENCHMARKS" in saida
@@ -297,7 +298,7 @@ def test_resumo_da_estrategia_igual_ao_benchmark_tem_diferenca_zero(monkeypatch)
     ret = pd.DataFrame({t: indice for t in sc.BENCHMARKS_ETF.values()})
     monkeypatch.setattr(sc, "baixar_dados", lambda tickers, inicio: (ret, ret, ret))
     _, resumo = sc.avaliar_benchmarks(curva, "2022-01-01")
-    assert resumo.nome.tolist() == ["Estratégia", "CDI", "IBOV (BOVA11)", "IDIV (DIVO11)", "IFIX (XFIX11)"]
+    assert resumo.nome.tolist() == ["Estratégia", "CDI", "IBOV (BOVA11)", "IDIV (DIVO11)", "IFIX (XFIX11)", "Misto 50/50 (IBOV+IFIX)"]
     assert resumo.xirr_aa_pct.iloc[0] == pytest.approx(12.68, abs=0.2)     # (1,01^12 - 1)
     assert resumo.xirr_aa_pct.iloc[2] == pytest.approx(resumo.xirr_aa_pct.iloc[0], abs=1e-6)
     assert resumo.diferenca_xirr_pp.iloc[2] == pytest.approx(0.0, abs=1e-6)
@@ -374,6 +375,67 @@ def test_resumo_inclui_drawdown_da_estrategia_e_dos_benchmarks(monkeypatch):
     assert por_nome["Estratégia"] == pytest.approx(-20.0)
     assert por_nome["IBOV (BOVA11)"] == pytest.approx(-20.0) and por_nome["IFIX (XFIX11)"] == pytest.approx(-20.0)
     assert por_nome["CDI"] == pytest.approx(0.0)        # CDI nunca cai
+
+
+# ---------- benchmark misto ----------
+
+def etfs_com(ibov, ifix):
+    """Retornos de ETFs para o monkeypatch de baixar_dados: BOVA11/DIVO11 = ibov, XFIX11 = ifix."""
+    ret = pd.DataFrame({"BOVA11.SA": ibov, "DIVO11.SA": ibov, "XFIX11.SA": ifix})
+    return lambda tickers, inicio: (ret, ret, ret)
+
+
+def test_misto_aplica_metade_de_cada_aporte_em_cada_componente(monkeypatch):
+    curva, ibov = curva_sintetica(mensal=0.01)
+    _, ifix = curva_sintetica(mensal=0.005)
+    monkeypatch.setattr(sc, "baixar_dados", etfs_com(ibov, ifix))
+    monkeypatch.setattr(sc, "baixar_cdi", lambda ini, fim: cdi_diario(ini, fim))
+    monkeypatch.setattr(sc, "CUSTO_TRADE", 0.0)
+    curva2, resumo = sc.avaliar_benchmarks(curva, "2022-01-01")
+    datas = ibov.index
+    metade = pd.Series(100.0, index=datas)                                       # 200 / 2
+    esperado = sc.simular_aportes(ibov, metade) + sc.simular_aportes(ifix, metade)
+    assert curva2["valor_misto_50_50_ibov_ifix"].to_numpy() == pytest.approx(esperado.to_numpy())
+    assert curva2["valor_misto_50_50_ibov_ifix"].to_numpy() == pytest.approx(
+        (0.5 * curva2["valor_ibov_bova11"] + 0.5 * curva2["valor_ifix_xfix11"]).to_numpy())
+    xirr = resumo.set_index("nome").xirr_aa_pct
+    assert xirr["IFIX (XFIX11)"] < xirr["Misto 50/50 (IBOV+IFIX)"] < xirr["IBOV (BOVA11)"]
+
+
+def test_misto_diversifica_o_drawdown(monkeypatch):
+    datas = pd.date_range("2022-01-31", periods=8, freq="ME")
+    cai = pd.Series([1.0, 1.0, 0.8, 0.8, 0.8, 0.8, 0.8, 0.8], index=datas)        # IBOV: -20% no 3º mês
+    sobe = pd.Series([1.0, 1.0, 1.1, 1.1, 1.1, 1.1, 1.1, 1.1], index=datas)       # IFIX: +10% no mesmo mês
+    curva = pd.DataFrame({"data": [d.date().isoformat() for d in datas], "aporte_mes": 200.0,
+                          "valor_carteira": sc.simular_aportes(sobe, pd.Series(200.0, index=datas)).to_numpy()})
+    monkeypatch.setattr(sc, "baixar_dados", etfs_com(cai, sobe))
+    monkeypatch.setattr(sc, "baixar_cdi", lambda ini, fim: cdi_diario(ini, fim))
+    monkeypatch.setattr(sc, "CUSTO_TRADE", 0.0)
+    _, resumo = sc.avaliar_benchmarks(curva, "2022-01-01")
+    queda = resumo.set_index("nome").max_drawdown_pct
+    assert queda["IBOV (BOVA11)"] == pytest.approx(-20.0)
+    assert -20.0 < queda["Misto 50/50 (IBOV+IFIX)"] < 0.0
+
+
+def test_misto_e_ignorado_com_aviso_quando_falta_um_componente(monkeypatch, capsys):
+    curva, indice = curva_sintetica()
+    ret = pd.DataFrame({"BOVA11.SA": indice, "DIVO11.SA": indice})                # sem XFIX11
+    monkeypatch.setattr(sc, "baixar_dados", lambda tickers, inicio: (ret, ret, ret))
+    monkeypatch.setattr(sc, "baixar_cdi", lambda ini, fim: cdi_diario(ini, fim))
+    curva2, resumo = sc.avaliar_benchmarks(curva, "2022-01-01")
+    assert "Misto 50/50 (IBOV+IFIX)" not in resumo.nome.tolist()
+    assert "valor_misto_50_50_ibov_ifix" not in curva2.columns
+    saida = capsys.readouterr().out
+    assert "Misto 50/50" in saida and "IFIX (XFIX11)" in saida and "ignorado" in saida
+
+
+def test_pesos_do_misto_precisam_somar_1(monkeypatch):
+    curva, indice = curva_sintetica()
+    monkeypatch.setattr(sc, "baixar_dados", etfs_com(indice, indice))
+    monkeypatch.setattr(sc, "baixar_cdi", lambda ini, fim: cdi_diario(ini, fim))
+    monkeypatch.setattr(sc, "BENCHMARKS_MISTOS", {"Errado": {"IBOV (BOVA11)": 0.5, "IFIX (XFIX11)": 0.6}})
+    with pytest.raises(ValueError, match="somar 1"):
+        sc.avaliar_benchmarks(curva, "2022-01-01")
 
 
 def test_benchmark_com_historico_curto_e_falha_do_cdi_viram_aviso(monkeypatch, capsys):

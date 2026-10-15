@@ -55,6 +55,10 @@ LIMITE_CLASSE = {"FII": MAX_PESO_FII, "ACAO": MAX_PESO_ACOES}
 # O XFIX11 replica o IFIX (índice de FIIs) e é o benchmark de FIIs. Se o Yahoo não tiver o ticker, é
 # ignorado com aviso; para usar outra referência de FIIs, troque o ticker aqui.
 BENCHMARKS_ETF = {"IBOV (BOVA11)": "BOVA11.SA", "IDIV (DIVO11)": "DIVO11.SA", "IFIX (XFIX11)": "XFIX11.SA"}
+# Benchmarks mistos, para uma carteira de ações e FIIs: cada aporte é dividido entre os componentes
+# (nomes de BENCHMARKS_ETF) nos pesos indicados, que somam 1. Sem venda para rebalancear, como na
+# estratégia, então o peso de cada componente deriva com o tempo. Só entra se todos os componentes existirem.
+BENCHMARKS_MISTOS = {"Misto 50/50 (IBOV+IFIX)": {"IBOV (BOVA11)": 0.5, "IFIX (XFIX11)": 0.5}}
 # CDI diário (% ao dia): série 12 do SGS do Banco Central.
 URL_CDI_BCB = "https://api.bcb.gov.br/dados/serie/bcdata.sgs.12/dados"
 
@@ -442,6 +446,16 @@ def avaliar_benchmarks(curva: pd.DataFrame, inicio: str,
                     print(f"[AVISO] {nome}: histórico não cobre todo o período do backtest{desde}; ignorado.")
                 else:
                     series[nome] = valores
+        for nome, pesos in BENCHMARKS_MISTOS.items():
+            if not np.isclose(sum(pesos.values()), 1.0):
+                raise ValueError(f"Os pesos de '{nome}' em BENCHMARKS_MISTOS devem somar 1.")
+            faltam = [c for c in pesos if c not in series]
+            if faltam:
+                print(f"[AVISO] {nome}: sem {', '.join(faltam)}; ignorado.")
+            else:
+                # O patrimônio é linear nos aportes: aplicar peso*aporte em cada componente
+                # equivale a ponderar os patrimônios dos componentes.
+                series[nome] = sum(peso * series[c] for c, peso in pesos.items())
 
     curva = curva.copy()
     for nome, valores in series.items():
