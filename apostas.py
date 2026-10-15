@@ -24,7 +24,7 @@ APOSTAS = [
     ("USIM5.SA", "ação", "siderurgia"), ("CSNA3.SA", "ação", "siderurgia"), ("CYRE3.SA", "ação", "construção"),
     ("MRVE3.SA", "ação", "construção"), ("COGN3.SA", "ação", "educação"), ("YDUQ3.SA", "ação", "educação"),
     ("HAPV3.SA", "ação", "saúde"), ("IRBR3.SA", "ação", "resseguros"), ("CASH3.SA", "ação", "tecnologia"),
-    ("LWSA3.SA", "ação", "tecnologia"), ("EMBR3.SA", "ação", "aviação"), ("RENT3.SA", "ação", "aluguel de carros"),
+    ("LWSA3.SA", "ação", "tecnologia"), ("EMBJ3.SA", "ação", "aviação"), ("RENT3.SA", "ação", "aluguel de carros"),
     ("SLCE3.SA", "ação", "agronegócio"),
     ("HASH11.SA", "ETF", "criptomoedas"), ("BITH11.SA", "ETF", "bitcoin"), ("IVVB11.SA", "ETF", "bolsa dos EUA (S&P 500)"),
     ("NASD11.SA", "ETF", "bolsa dos EUA (tecnologia)"), ("GOLD11.SA", "ETF", "ouro"), ("XINA11.SA", "ETF", "China"),
