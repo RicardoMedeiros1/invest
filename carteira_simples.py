@@ -343,7 +343,17 @@ def baixar_indices() -> list[dict]:
     return saida
 
 
-def montar_apostas(fechamentos: dict[str, pd.Series], volumes: dict[str, pd.Series]) -> list[dict]:
+def eventos_de_dividendos(proventos: pd.Series | None, ate: pd.Timestamp, dias: int = 365) -> list[list]:
+    """Dividendos por unidade dos últimos `dias` dias até `ate`: [[AAAA-MM-DD, valor], ...]. A carteira virtual os credita."""
+    if proventos is None or proventos.empty:
+        return []
+    p = proventos.dropna()
+    p = p[(p > 0) & (p.index > ate - pd.Timedelta(days=dias)) & (p.index <= ate)]
+    return [[f"{d:%Y-%m-%d}", _numero(v, 4)] for d, v in p.sort_index().items()]
+
+
+def montar_apostas(fechamentos: dict[str, pd.Series], volumes: dict[str, pd.Series],
+                   proventos: dict[str, pd.Series] | None = None) -> list[dict]:
     """Uma linha por aposta com preço, variações e os números de risco (ver apostas.py). Sem histórico, fica de fora."""
     saida = []
     for ticker, tipo, setor in ap.APOSTAS:
@@ -354,7 +364,7 @@ def montar_apostas(fechamentos: dict[str, pd.Series], volumes: dict[str, pd.Seri
         saida.append({"t": nome(ticker), "classe": tipo, "setor": setor, "preco": _numero(f.iloc[-1], 4),
                       "dia": _numero(v["dia"], 2), "mes": _numero(v["mes"], 2), "ano": _numero(v["ano"], 2),
                       "oscilacao": m["oscilacao"], "queda12": m["queda12"], "topo": m["topo"], "liquidez": m["liquidez"],
-                      "serie": ap.serie_do_ano(f)})
+                      "serie": ap.serie_do_ano(f), "div": eventos_de_dividendos((proventos or {}).get(ticker), f.index[-1])})
     return saida
 
 
@@ -363,11 +373,11 @@ def baixar_apostas() -> list[dict]:
     tickers = [t for t, _, _ in ap.APOSTAS if t not in sc.UNIVERSO]   # quem já está no scanner não é aposta
     volumes: dict[str, pd.Series] = {}
     try:
-        fechamentos, _ = baixar_diario(tickers, volumes=volumes)
+        fechamentos, proventos = baixar_diario(tickers, volumes=volumes)
     except RuntimeError as exc:
         print(f"[AVISO] Sem a seção de apostas: {exc}")
         return []
-    return montar_apostas(fechamentos, volumes)
+    return montar_apostas(fechamentos, volumes, proventos)
 
 
 def _numero(x, casas: int):
@@ -377,7 +387,8 @@ def _numero(x, casas: int):
 
 def dados_do_painel(p: dict, tabela: pd.DataFrame, fechamentos: dict[str, pd.Series], indices: list[dict], agora: datetime,
                     config: dict, link_planilha: str | None = None, dados_url: str | None = None,
-                    intervalo_min: int = INTERVALO_PADRAO_MIN, lista_apostas: list[dict] | None = None) -> dict:
+                    intervalo_min: int = INTERVALO_PADRAO_MIN, lista_apostas: list[dict] | None = None,
+                    proventos: dict[str, pd.Series] | None = None) -> dict:
     """Tudo o que a página mostra, em tipos simples (vai para o JSON). `config`: valor, ativos, fiis e meses iniciais."""
     ativos = []
     for r in tabela.itertuples():
@@ -385,7 +396,8 @@ def dados_do_painel(p: dict, tabela: pd.DataFrame, fechamentos: dict[str, pd.Ser
             "t": nome(r.ticker), "classe": r.classe, "preco": _numero(r.preco, 4), "dia": _numero(r.dia_pct, 2),
             "mes": _numero(r.mes_pct, 2), "ano": _numero(r.ano_pct, 2), "div12": _numero(r.dividendo_12m, 4),
             "dy": _numero(r.dy_12m_pct, 2), "ok": bool(r.aprovado), "pos": None if pd.isna(r.posicao) else int(r.posicao),
-            "nota": _numero(r.nota, 3), "serie": [_numero(x, 4) for x in fechamentos[r.ticker].tail(SERIE_PREGOES)]})
+            "nota": _numero(r.nota, 3), "serie": [_numero(x, 4) for x in fechamentos[r.ticker].tail(SERIE_PREGOES)],
+            "div": eventos_de_dividendos((proventos or {}).get(r.ticker), p["data"])})
     return {
         "versao": painel_pagina.VERSAO_DADOS, "gerado_em": agora.isoformat(timespec="seconds"),
         "data_precos": f"{p['data']:%Y-%m-%d}", "intervalo_min": intervalo_min, "dados_url": dados_url, "planilha_url": link_planilha,
@@ -454,7 +466,7 @@ def main() -> None:
     arquivo_html.parent.mkdir(parents=True, exist_ok=True)
     dados = dados_do_painel(painel, tabela, fechamentos, indices, agora,
                             {"valor": args.valor, "ativos": args.ativos, "fiis": args.fiis, "meses": args.meses},
-                            args.link_planilha, args.dados_json, args.intervalo_min, lista_apostas)
+                            args.link_planilha, args.dados_json, args.intervalo_min, lista_apostas, proventos)
     arquivo_html.write_text(painel_pagina.pagina_html(dados), encoding="utf-8")
     print(f"\nRelatório atualizado: {arquivo_html}")
     if args.dados_json:

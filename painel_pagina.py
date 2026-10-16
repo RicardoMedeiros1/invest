@@ -12,7 +12,7 @@ import re
 from pathlib import Path
 
 PASTA_WEB = Path(__file__).resolve().parent / "painel_web"
-VERSAO_DADOS = 2   # precisa ser igual a VERSAO_PAGINA em painel_web/painel.js
+VERSAO_DADOS = 3   # precisa ser igual a VERSAO_PAGINA em painel_web/painel.js
 DESCRICAO = "Painel da carteira: as melhores ações e FIIs agora, quanto cada um subiu, plano de compra e custos das corretoras."
 
 

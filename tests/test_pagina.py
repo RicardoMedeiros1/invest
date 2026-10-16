@@ -9,7 +9,7 @@ import pytest
 
 import carteira_simples as cs
 import painel_pagina
-from test_carteira_simples import HOJE, painel_tabela_e_fechamentos, serie_diaria
+from test_carteira_simples import HOJE, painel_tabela_e_fechamentos, rodar_painel, serie_diaria
 
 AGORA = datetime(2026, 10, 15, 14, 35, 12, tzinfo=timezone(timedelta(hours=-3)))
 CONFIG = {"valor": 200.0, "ativos": 5, "fiis": 0, "meses": 3}
@@ -132,3 +132,47 @@ def test_ids_que_o_script_usa_existem_na_pagina():
     usados = set(re.findall(r'\$\("([\w-]+)"\)', js))
     existentes = set(re.findall(r'id="([\w-]+)"', modelo))
     assert usados and usados <= existentes, usados - existentes
+
+
+# ---------- dados para a carteira virtual ----------
+
+def test_eventos_de_dividendos_so_positivos_do_ultimo_ano_e_ate_hoje_em_ordem():
+    idx = pd.to_datetime(["2025-09-01", "2025-11-10", "2026-03-02", "2026-06-01", "2026-10-01", "2026-10-20"])
+    s = pd.Series([0.3, 0.0, 0.5, float("nan"), 0.7, 0.9], index=idx)
+    hoje = pd.Timestamp("2026-10-15")
+    assert cs.eventos_de_dividendos(s, hoje) == [["2026-03-02", 0.5], ["2026-10-01", 0.7]]   # fora: de mais de 1 ano, zero, vazio e futuro
+    assert cs.eventos_de_dividendos(s.sort_index(ascending=False), hoje) == [["2026-03-02", 0.5], ["2026-10-01", 0.7]]
+    assert cs.eventos_de_dividendos(None, hoje) == [] and cs.eventos_de_dividendos(pd.Series(dtype=float), hoje) == []
+    assert cs.eventos_de_dividendos(pd.Series([0.123456789], index=[pd.Timestamp("2026-10-01")]), hoje) == [["2026-10-01", 0.1235]]
+
+
+def test_dados_levam_os_dividendos_de_cada_ativo():
+    painel, tabela, fech = painel_tabela_e_fechamentos()
+    prov = {"PETR4.SA": pd.Series([0.5, 0.25], index=pd.to_datetime(["2026-03-10", "2026-09-01"]))}
+    d = cs.dados_do_painel(painel, tabela, fech, [], AGORA, CONFIG, proventos=prov)
+    por_ativo = {a["t"]: a["div"] for a in d["ativos"]}
+    assert por_ativo["PETR4"] == [["2026-03-10", 0.5], ["2026-09-01", 0.25]] and por_ativo["CXSE3"] == []
+    assert cs.dados_do_painel(painel, tabela, fech, [], AGORA, CONFIG)["ativos"][0]["div"] == []         # sem dados de proventos: lista vazia
+    painel_pagina.dados_json(d)
+
+
+def test_main_publica_dividendos_dos_ativos_e_das_apostas(monkeypatch, tmp_path):
+    import json
+    rodar_painel(monkeypatch, tmp_path, "--sem-abrir", "--ativos", "3", "--dados-json", "dados.json")
+    dados = json.loads((tmp_path / "dados.json").read_text(encoding="utf-8"))
+    for lista in (dados["ativos"], dados["apostas"]):
+        com = [a for a in lista if a["div"]]
+        assert com, "o TickerFalso paga dividendo a cada trimestre"
+        for a in com:
+            datas = [d for d, _ in a["div"]]
+            assert datas == sorted(datas) and all(v > 0 for _, v in a["div"])
+            assert min(datas) > (pd.Timestamp(dados["data_precos"]) - pd.Timedelta(days=365)).strftime("%Y-%m-%d") and max(datas) <= dados["data_precos"]
+
+
+def test_pagina_e_script_da_carteira_virtual_avisam_que_e_simulacao():
+    modelo = (painel_pagina.PASTA_WEB / "modelo.html").read_text(encoding="utf-8")
+    assert '<section id="virtual"' in modelo and 'id="virtual-saida"' in modelo and 'href="#virtual"' in modelo
+    js = (painel_pagina.PASTA_WEB / "painel.js").read_text(encoding="utf-8")
+    for aviso in ("Simulação com dinheiro de mentira", "só neste navegador", "use Exportar para guardar uma cópia", "nem imposto",
+                  "Dividendos entram no caixa na data ex", "Não é recomendação"):
+        assert aviso in js

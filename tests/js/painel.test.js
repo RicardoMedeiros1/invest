@@ -165,3 +165,206 @@ test("apostas: filtro por tipo (ETFs e FIIs contam como fundos) e ordem com o qu
   assert.deepEqual(ord("vol"), ["AAA3", "BBB11", "DDD11", "CCC3"]);
   assert.deepEqual(ord("liq"), ["DDD11", "AAA3", "CCC3", "BBB11"]);
 });
+
+// ---------- carteira virtual ----------
+
+const comOrdens = (...itens) => itens.reduce((c, [o, data, div]) => {
+  const r = p.registrarOrdem(c, o, data, div || {});
+  assert.equal(r.erro, undefined, r.erro);
+  return r.carteira;
+}, p.carteiraNova());
+
+test("carteira virtual: aporte, compra, preço médio, caixa, total e resultado", () => {
+  const c = comOrdens(
+    [{ tipo: "aporte", valor: 2000 }, "2026-10-01"],
+    [{ tipo: "compra", t: "PETR4", qtd: 10, preco: 50 }, "2026-10-01"],
+    [{ tipo: "compra", t: "PETR4", qtd: 10, preco: 60 }, "2026-10-02"],
+    [{ tipo: "compra", t: "KNRI11", qtd: 1, preco: 150 }, "2026-10-02"]);
+  const r = p.calcularCarteira(c.ordens, { PETR4: 70, KNRI11: 140 }, {});
+  assert.ok(Math.abs(r.caixa - (2000 - 500 - 600 - 150)) < 1e-9);                            // 750
+  assert.ok(Math.abs(r.valorPosicoes - (1400 + 140)) < 1e-9);
+  assert.ok(Math.abs(r.total - (750 + 1540)) < 1e-9);
+  assert.ok(Math.abs(r.resultado - 290) < 1e-9 && Math.abs(r.resultado_pct - 14.5) < 1e-9);  // 2290 contra 2000 aportados
+  assert.deepEqual(r.posicoes.map((x) => x.t), ["PETR4", "KNRI11"]);                          // maior valor primeiro
+  const petr = r.posicoes.find((x) => x.t === "PETR4");
+  assert.equal(petr.qtd, 20);
+  assert.ok(Math.abs(petr.preco_medio - 55) < 1e-9);                                           // (500 + 600) / 20
+  assert.ok(Math.abs(petr.resultado - 300) < 1e-9 && Math.abs(petr.resultado_pct - 300 / 1100 * 100) < 1e-9);
+});
+
+test("carteira virtual: venda realiza o resultado pelo preço médio e zera a posição", () => {
+  let c = comOrdens(
+    [{ tipo: "aporte", valor: 2000 }, "2026-10-01"],
+    [{ tipo: "compra", t: "VALE3", qtd: 10, preco: 50 }, "2026-10-01"],
+    [{ tipo: "compra", t: "VALE3", qtd: 10, preco: 70 }, "2026-10-02"],                       // médio 60
+    [{ tipo: "venda", t: "VALE3", qtd: 5, preco: 80 }, "2026-10-03"]);
+  let r = p.calcularCarteira(c.ordens, { VALE3: 80 }, {});
+  assert.ok(Math.abs(r.realizado - 100) < 1e-9);                                              // (80 - 60) x 5
+  assert.equal(r.posicoes[0].qtd, 15);
+  assert.ok(Math.abs(r.posicoes[0].preco_medio - 60) < 1e-9);                                 // vender não muda o preço médio
+  const fim = p.registrarOrdem(c, { tipo: "venda", t: "VALE3", qtd: 15, preco: 90 }, "2026-10-04", {});
+  assert.equal(fim.erro, undefined);
+  r = p.calcularCarteira(fim.carteira.ordens, { VALE3: 90 }, {});
+  assert.equal(r.posicoes.length, 0);
+  assert.ok(Math.abs(r.total - (2000 - 500 - 700 + 5 * 80 + 15 * 90)) < 1e-9);               // 2550
+  assert.ok(Math.abs(r.realizado - (100 + 15 * 30)) < 1e-9 && Math.abs(r.resultado - 550) < 1e-9);
+});
+
+test("carteira virtual: recusa o que não dá para fazer", () => {
+  const c = comOrdens([{ tipo: "aporte", valor: 100 }, "2026-10-01"], [{ tipo: "compra", t: "PETR4", qtd: 1, preco: 40 }, "2026-10-01"]);
+  const erro = (o) => p.validarOrdem(c.ordens, o, {});
+  assert.match(erro({ tipo: "compra", t: "PETR4", qtd: 2, preco: 40 }), /Saldo insuficiente: a compra custa R\$ 80,00 e o caixa tem R\$ 60,00/);
+  assert.equal(erro({ tipo: "compra", t: "PETR4", qtd: 1, preco: 60 }), null);                // gasta o caixa todo, e é permitido
+  assert.match(erro({ tipo: "compra", t: "PETR4", qtd: 1, preco: 60.01 }), /Saldo insuficiente/);
+  assert.match(erro({ tipo: "compra", t: "PETR4", qtd: 1.5, preco: 10 }), /número inteiro/);
+  assert.match(erro({ tipo: "compra", t: "PETR4", qtd: 0, preco: 10 }), /número inteiro/);
+  assert.match(erro({ tipo: "compra", t: "PETR4", qtd: -1, preco: 10 }), /número inteiro/);
+  assert.match(erro({ tipo: "compra", t: "PETR4", qtd: 1, preco: 0 }), /preço maior que zero/);
+  assert.match(erro({ tipo: "compra", t: "PETR4", qtd: 1, preco: NaN }), /preço maior que zero/);
+  assert.match(erro({ tipo: "compra", t: "", qtd: 1, preco: 1 }), /Escolha um ativo/);
+  assert.match(erro({ tipo: "compra", t: "<img src=x>", qtd: 1, preco: 1 }), /Escolha um ativo/);
+  assert.match(erro({ tipo: "venda", t: "PETR4", qtd: 2, preco: 40 }), /Você tem 1 unidade\(s\) de PETR4 e tentou vender 2/);
+  assert.match(erro({ tipo: "venda", t: "VALE3", qtd: 1, preco: 40 }), /Você tem 0 unidade/);
+  assert.equal(erro({ tipo: "venda", t: "PETR4", qtd: 1, preco: 45 }), null);
+  assert.match(erro({ tipo: "aporte", valor: 0 }), /maior que zero/);
+  assert.match(erro({ tipo: "aporte", valor: -5 }), /maior que zero/);
+  assert.match(erro({ tipo: "aporte", valor: Infinity }), /maior que zero/);
+  assert.match(erro({ tipo: "transferir" }), /Tipo de ordem inválido/);
+  assert.equal(p.registrarOrdem(c, { tipo: "compra", t: "PETR4", qtd: 5, preco: 40 }, "2026-10-02", {}).erro !== undefined, true);
+  assert.equal(c.ordens.length, 2);                                                           // a carteira original não muda
+});
+
+test("carteira virtual: desfazer tira só a última ordem e não mexe na original", () => {
+  const c = comOrdens([{ tipo: "aporte", valor: 100 }, "2026-10-01"], [{ tipo: "compra", t: "PETR4", qtd: 1, preco: 40 }, "2026-10-01"]);
+  const d = p.desfazerUltima(c);
+  assert.equal(d.ordens.length, 1); assert.equal(c.ordens.length, 2);
+  assert.equal(p.desfazerUltima(p.carteiraNova()).ordens.length, 0);
+});
+
+test("dividendos entram pela data ex: quem tinha na véspera recebe, quem comprou no dia não", () => {
+  const div = { PETR4: [["2026-10-10", 1], ["2026-10-20", 2]], VALE3: [["2026-10-05", 5]] };
+  const c = comOrdens(
+    [{ tipo: "aporte", valor: 1000 }, "2026-10-01"],
+    [{ tipo: "compra", t: "PETR4", qtd: 10, preco: 10 }, "2026-10-09"],                       // tinha na véspera de 10/10: recebe 10 x 1
+    [{ tipo: "compra", t: "VALE3", qtd: 4, preco: 10 }, "2026-10-05"]);                        // comprou NO dia ex: não recebe
+  assert.equal(p.unidadesAntes(c.ordens, "PETR4", "2026-10-10"), 10);
+  assert.equal(p.unidadesAntes(c.ordens, "PETR4", "2026-10-09"), 0);
+  assert.equal(p.unidadesAntes(c.ordens, "VALE3", "2026-10-05"), 0);
+  const d = p.dividendosDaCarteira(c.ordens, div);
+  assert.deepEqual(d.itens.map((x) => [x.t, x.data, x.qtd, x.valor]), [["PETR4", "2026-10-10", 10, 10], ["PETR4", "2026-10-20", 10, 20]]);
+  assert.equal(d.total, 30);
+  const r = p.calcularCarteira(c.ordens, { PETR4: 10, VALE3: 10 }, div);
+  assert.ok(Math.abs(r.caixa - (1000 - 100 - 40 + 30)) < 1e-9 && r.dividendos === 30);
+  assert.ok(Math.abs(r.resultado - 30) < 1e-9);                                                // preços iguais: o resultado são os dividendos
+});
+
+test("dividendos: quem vendeu antes da data ex não recebe; com dividendos o caixa passa a comprar", () => {
+  const div = { PETR4: [["2026-10-10", 1]] };
+  const vendeu = comOrdens(
+    [{ tipo: "aporte", valor: 100 }, "2026-10-01"],
+    [{ tipo: "compra", t: "PETR4", qtd: 10, preco: 10 }, "2026-10-02"],
+    [{ tipo: "venda", t: "PETR4", qtd: 10, preco: 10 }, "2026-10-09"]);
+  assert.equal(p.dividendosDaCarteira(vendeu.ordens, div).total, 0);
+  const segurou = comOrdens([{ tipo: "aporte", valor: 100 }, "2026-10-01"], [{ tipo: "compra", t: "PETR4", qtd: 10, preco: 10 }, "2026-10-02"]);
+  const compra = { tipo: "compra", t: "VALE3", qtd: 1, preco: 5 };
+  assert.match(p.validarOrdem(segurou.ordens, compra, {}), /Saldo insuficiente/);              // sem dividendos o caixa é 0
+  assert.equal(p.validarOrdem(segurou.ordens, compra, div), null);                             // com R$ 10 de dividendos, cabe
+});
+
+test("posição sem preço no painel usa o custo em vez de sumir ou virar NaN", () => {
+  const c = comOrdens([{ tipo: "aporte", valor: 100 }, "2026-10-01"], [{ tipo: "compra", t: "EMBJ3", qtd: 2, preco: 20 }, "2026-10-01"]);
+  const r = p.calcularCarteira(c.ordens, {}, {});
+  assert.equal(r.posicoes[0].sem_preco, true);
+  assert.ok(Math.abs(r.posicoes[0].valor - 40) < 1e-9 && Number.isFinite(r.total) && Math.abs(r.resultado) < 1e-9);
+});
+
+test("plano com a carteira virtual: continua equilibrando o que já foi aplicado", () => {
+  const precos = { A: 10, B: 10, C: 10 };
+  const sem = p.planoDeCompras(precos, ["A", "B", "C"], 30, 1);
+  assert.deepEqual(sem[0].compras, { A: 1, B: 1, C: 1 });
+  const com = p.planoDeCompras(precos, ["A", "B", "C"], 30, 1, { A: 100, B: 0, C: 15 });     // A já tem muito: o dinheiro vai para B e C
+  assert.equal(com[0].compras.A, undefined);
+  assert.deepEqual(com[0].compras, { B: 2, C: 1 });
+  const ranking = ["A", "B", "C"].map((t) => ({ t, classe: "ação" }));
+  assert.deepEqual(p.comprasPeloPlano(ranking, { ativos: 3, fiis: 0 }, precos, 25, {}), { A: 1, B: 1 });
+  assert.deepEqual(p.comprasPeloPlano(ranking, { ativos: 3, fiis: 0 }, precos, -5, {}), {});   // caixa negativo não compra nada
+});
+
+test("um ponto por dia no histórico; o último valor do dia vence; sem mudança devolve a mesma lista", () => {
+  let h = [];
+  h = p.registrarSnapshot(h, "2026-10-15", 1000.004, 1000);
+  assert.deepEqual(h, [{ d: "2026-10-15", total: 1000, aportado: 1000 }]);
+  const mesma = p.registrarSnapshot(h, "2026-10-15", 1000.004, 1000);
+  assert.equal(mesma, h);
+  h = p.registrarSnapshot(h, "2026-10-15", 1010, 1000);
+  assert.equal(h.length, 1); assert.equal(h[0].total, 1010);
+  h = p.registrarSnapshot(h, "2026-10-16", 990, 1000);
+  assert.deepEqual(h.map((x) => x.d), ["2026-10-15", "2026-10-16"]);
+  assert.equal(p.registrarSnapshot(h, "ontem", 1, 1), h);                                      // data inválida é ignorada
+  assert.equal(p.registrarSnapshot(h, "2026-10-17", NaN, 1), h);
+  let longo = [];
+  for (let i = 0; i < 1100; i++) longo = p.registrarSnapshot(longo, new Date(Date.UTC(2020, 0, 1 + i)).toISOString().slice(0, 10), i, i);
+  assert.equal(longo.length, 1000);
+});
+
+test("aporte do mês: só conta aporte no mesmo mês dos preços", () => {
+  const c = comOrdens([{ tipo: "aporte", valor: 200 }, "2026-09-30"]);
+  assert.equal(p.aporteFeitoNoMes(c, "2026-10-15"), false);
+  assert.equal(p.aporteFeitoNoMes(c, "2026-09-02"), true);
+  assert.equal(p.aporteFeitoNoMes(p.carteiraNova(), "2026-10-15"), false);
+});
+
+test("exportar e importar devolvem a mesma carteira", () => {
+  const div = { PETR4: [["2026-10-10", 1]] };
+  let c = comOrdens([{ tipo: "aporte", valor: 500 }, "2026-10-01"], [{ tipo: "compra", t: "PETR4", qtd: 5, preco: 40 }, "2026-10-02"],
+    [{ tipo: "venda", t: "PETR4", qtd: 2, preco: 45 }, "2026-10-12"]);
+  c = Object.assign({}, c, { historico: p.registrarSnapshot([], "2026-10-12", 520, 500) });
+  const texto = p.exportarCarteira(c, "2026-10-12T12:00:00Z");
+  const r = p.importarCarteira(texto, div);
+  assert.equal(r.erro, undefined);
+  assert.deepEqual(r.carteira, c);
+  assert.deepEqual(p.calcularCarteira(r.carteira.ordens, { PETR4: 41 }, div), p.calcularCarteira(c.ordens, { PETR4: 41 }, div));
+});
+
+test("importar recusa arquivo estranho, ordem inválida e contas que não fecham", () => {
+  const ok = { versao: 1, ordens: [{ data: "2026-10-01", tipo: "aporte", valor: 100 }, { data: "2026-10-01", tipo: "compra", t: "PETR4", qtd: 2, preco: 40 }] };
+  const tenta = (o) => p.importarCarteira(JSON.stringify(o), {});
+  assert.equal(tenta(ok).erro, undefined);
+  assert.match(p.importarCarteira("isto não é json", {}).erro, /JSON válido/);
+  assert.match(p.importarCarteira("null", {}).erro, /não é de uma carteira virtual/);
+  assert.match(p.importarCarteira("[]", {}).erro, /não é de uma carteira virtual/);
+  assert.match(tenta({ versao: 2, ordens: [] }).erro, /não é de uma carteira virtual/);
+  assert.match(tenta({ versao: 1, ordens: "x" }).erro, /não é de uma carteira virtual/);
+  assert.match(tenta({ versao: 1, ordens: [null] }).erro, /data inválida/);
+  assert.match(tenta({ versao: 1, ordens: [{ data: "01/10/2026", tipo: "aporte", valor: 1 }] }).erro, /data inválida/);
+  assert.match(tenta({ versao: 1, ordens: [{ data: "2026-10-02", tipo: "aporte", valor: 1 }, { data: "2026-10-01", tipo: "aporte", valor: 1 }] }).erro, /fora de ordem/);
+  assert.match(tenta({ versao: 1, ordens: [{ data: "2026-10-01", tipo: "aporte", valor: -1 }] }).erro, /aporte com valor inválido/);
+  assert.match(tenta({ versao: 1, ordens: [{ data: "2026-10-01", tipo: "aporte", valor: "100" }] }).erro, /aporte com valor inválido/);
+  assert.match(tenta({ versao: 1, ordens: [{ data: "2026-10-01", tipo: "compra", t: "petr4", qtd: 1, preco: 1 }] }).erro, /dados inválidos/);
+  assert.match(tenta({ versao: 1, ordens: [{ data: "2026-10-01", tipo: "compra", t: "PETR4", qtd: 1.5, preco: 1 }] }).erro, /dados inválidos/);
+  assert.match(tenta({ versao: 1, ordens: [{ data: "2026-10-01", tipo: "compra", t: "PETR4", qtd: 1, preco: 0 }] }).erro, /dados inválidos/);
+  assert.match(tenta({ versao: 1, ordens: [{ data: "2026-10-01", tipo: "doar", valor: 1 }] }).erro, /tipo desconhecido/);
+  assert.match(tenta({ versao: 1, ordens: [{ data: "2026-10-01", tipo: "aporte", valor: 10 }, { data: "2026-10-01", tipo: "venda", t: "PETR4", qtd: 1, preco: 1 }] }).erro, /vende mais PETR4/);
+  assert.match(tenta({ versao: 1, ordens: [{ data: "2026-10-01", tipo: "aporte", valor: 10 }, { data: "2026-10-01", tipo: "compra", t: "PETR4", qtd: 1, preco: 40 }] }).erro, /caixa ficaria negativo/);
+  const grande = { versao: 1, ordens: Array.from({ length: 2001 }, () => ({ data: "2026-10-01", tipo: "aporte", valor: 1 })) };
+  assert.match(tenta(grande).erro, /ordens demais/);
+});
+
+test("importar reconstrói os campos: o que vem de fora além do esperado não entra", () => {
+  const r = p.importarCarteira(JSON.stringify({
+    versao: 1, extra: "x", __proto__: { admin: true },
+    ordens: [{ id: 99, data: "2026-10-01", tipo: "aporte", valor: 100, html: "<script>1</script>" }],
+    historico: [{ d: "2026-10-01", total: 100, aportado: 100, x: 1 }, { d: "lixo", total: 1, aportado: 1 }, { d: "2026-10-02", total: "a", aportado: 1 }, null],
+  }), {});
+  assert.deepEqual(r.carteira, { versao: 1, ordens: [{ id: 1, data: "2026-10-01", tipo: "aporte", valor: 100 }], historico: [{ d: "2026-10-01", total: 100, aportado: 100 }], proximo_id: 2 });
+  assert.equal(({}).admin, undefined);
+});
+
+test("gráfico da carteira: as duas linhas na mesma escala", () => {
+  const [a, b] = p.caminhosComuns([[100, 150, 120], [100, 100, 100]], 100, 50, 0);
+  assert.ok(a.startsWith("M0.0 50.0") && a.includes("L50.0 0.0"));                           // 100 embaixo, 150 em cima
+  assert.ok(b.startsWith("M0.0 50.0") && b.endsWith("L100.0 50.0"));                         // a aportada fica reta na base
+  assert.deepEqual(p.caminhosComuns([[1], []], 100, 50), ["", ""]);
+  assert.deepEqual(p.caminhosComuns([[], []], 100, 50), ["", ""]);
+  assert.ok(!/NaN|Infinity/.test(p.caminhosComuns([[5, 5], [5, 5]], 100, 50)[0]));
+});

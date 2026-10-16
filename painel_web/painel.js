@@ -2,7 +2,7 @@
 // Painel da carteira: a lógica (funções puras, testadas com o Node) vem primeiro; o desenho da página, depois.
 // As regras de escolha e de compra são as mesmas de scanner_dividendos_b3.py e carteira_simples.py.
 
-const VERSAO_PAGINA = 2;            // precisa ser igual a VERSAO_DADOS em painel_pagina.py
+const VERSAO_PAGINA = 3;            // precisa ser igual a VERSAO_DADOS em painel_pagina.py
 const FUSO_BRASILIA_MS = -3 * 3600 * 1000;   // Brasília não tem horário de verão desde 2019
 const ABERTURA_MIN = 10 * 60;       // pregão da B3: 10h às 18h, só para o "aberto/fechado" (feriados vêm dos dados)
 const FECHAMENTO_MIN = 18 * 60;
@@ -55,10 +55,10 @@ function escolherCandidatos(ranking, topN, nFiis) {
   return escolhidos.sort((a, b) => tickers.indexOf(a) - tickers.indexOf(b));
 }
 
-function planoDeCompras(precos, ordem, valor, meses) {
+function planoDeCompras(precos, ordem, valor, meses, investidoInicial) {
   if (!ordem.length) return [];
   const investido = {};
-  ordem.forEach((t) => { investido[t] = 0; });
+  ordem.forEach((t) => { investido[t] = (investidoInicial && investidoInicial[t]) || 0; });   // a carteira virtual já tem posições
   let caixa = 0;
   const plano = [];
   for (let mes = 1; mes <= meses; mes++) {
@@ -140,9 +140,190 @@ function idadeMin(agoraMs, geradoEm) { return Math.max(0, Math.round((agoraMs - 
 
 function atrasado(estado, idade, intervaloMin) { return estado === "aberto" && idade > Math.max(45, 3 * intervaloMin); }
 
+// ---------- carteira virtual: as contas (funções puras) ----------
+
+const VERSAO_CARTEIRA = 1;
+const MAX_ORDENS = 2000;
+const MAX_HISTORICO = 1000;
+const LIMITE_VALOR = 1e9;
+const RE_DATA = /^\d{4}-\d{2}-\d{2}$/;
+const RE_TICKER = /^[A-Z0-9]{4,8}$/;
+
+function carteiraNova() { return { versao: VERSAO_CARTEIRA, ordens: [], historico: [], proximo_id: 1 }; }
+
+// Unidades que a pessoa tinha na véspera de `data`: quem compra no dia do ex-dividendo não recebe.
+function unidadesAntes(ordens, t, data) {
+  let q = 0;
+  for (const o of ordens) {
+    if (o.t === t && o.data < data) q += o.tipo === "compra" ? o.qtd : o.tipo === "venda" ? -o.qtd : 0;
+  }
+  return q;
+}
+
+// dividendos: { ticker: [[AAAA-MM-DD, valor por unidade], ...] }. Entram no caixa na data ex-dividendo.
+function dividendosDaCarteira(ordens, dividendos) {
+  const itens = [];
+  let total = 0;
+  const tickers = new Set(ordens.filter((o) => o.t).map((o) => o.t));
+  for (const t of tickers) {
+    for (const [data, v] of (dividendos[t] || [])) {
+      const q = unidadesAntes(ordens, t, data);
+      if (q > 0) { itens.push({ t, data, qtd: q, por_unidade: v, valor: q * v }); total += q * v; }
+    }
+  }
+  itens.sort((a, b) => (a.data < b.data ? -1 : a.data > b.data ? 1 : 0));
+  return { itens, total };
+}
+
+function calcularCarteira(ordens, precos, dividendos) {
+  const pos = {};
+  let caixa = 0, aportado = 0, realizado = 0;
+  for (const o of ordens) {
+    if (o.tipo === "aporte") { caixa += o.valor; aportado += o.valor; continue; }
+    const p = pos[o.t] || (pos[o.t] = { t: o.t, qtd: 0, custo: 0 });
+    if (o.tipo === "compra") {
+      caixa -= o.qtd * o.preco; p.qtd += o.qtd; p.custo += o.qtd * o.preco;
+    } else {
+      const medio = p.qtd ? p.custo / p.qtd : 0;
+      realizado += (o.preco - medio) * o.qtd; caixa += o.qtd * o.preco;
+      p.custo -= medio * o.qtd; p.qtd -= o.qtd;
+      if (p.qtd <= 0) { p.qtd = 0; p.custo = 0; }
+    }
+  }
+  const div = dividendosDaCarteira(ordens, dividendos || {});
+  caixa += div.total;
+  const posicoes = Object.values(pos).filter((p) => p.qtd > 0).map((p) => {
+    const atual = precos[p.t] === undefined ? null : precos[p.t];
+    const valor = atual === null ? p.custo : p.qtd * atual;
+    return { t: p.t, qtd: p.qtd, preco_medio: p.custo / p.qtd, preco_atual: atual, custo: p.custo, valor,
+      resultado: valor - p.custo, resultado_pct: p.custo > 0 ? (valor - p.custo) / p.custo * 100 : 0, sem_preco: atual === null };
+  }).sort((a, b) => b.valor - a.valor || (a.t < b.t ? -1 : 1));
+  const valorPosicoes = posicoes.reduce((acc, p) => acc + p.valor, 0);
+  const total = caixa + valorPosicoes;
+  return { caixa, aportado, realizado, dividendos: div.total, dividendosItens: div.itens, posicoes, valorPosicoes, total,
+    resultado: total - aportado, resultado_pct: aportado > 0 ? (total - aportado) / aportado * 100 : null };
+}
+
+// Devolve o texto do problema, ou null se a ordem pode ser registrada.
+function validarOrdem(ordens, o, dividendos) {
+  if (o.tipo === "aporte") {
+    return Number.isFinite(o.valor) && o.valor > 0 && o.valor <= LIMITE_VALOR ? null : "Informe um valor de aporte maior que zero.";
+  }
+  if (o.tipo !== "compra" && o.tipo !== "venda") return "Tipo de ordem inválido.";
+  if (typeof o.t !== "string" || !RE_TICKER.test(o.t)) return "Escolha um ativo da lista.";
+  if (!Number.isInteger(o.qtd) || o.qtd < 1 || o.qtd > 1e7) return "A quantidade precisa ser um número inteiro de 1 em diante (não existe meia ação).";
+  if (!Number.isFinite(o.preco) || o.preco <= 0 || o.preco >= 1e7) return "Informe um preço maior que zero.";
+  const c = calcularCarteira(ordens, {}, dividendos);
+  if (o.tipo === "compra") {
+    const custo = o.qtd * o.preco;
+    return custo <= c.caixa + 1e-6 ? null : "Saldo insuficiente: a compra custa " + fmtBRL(custo) + " e o caixa tem " + fmtBRL(Math.max(c.caixa, 0)) + ". Faça um aporte antes.";
+  }
+  const p = c.posicoes.find((x) => x.t === o.t);
+  const tem = p ? p.qtd : 0;
+  return o.qtd <= tem ? null : "Você tem " + tem + " unidade(s) de " + o.t + " e tentou vender " + o.qtd + ".";
+}
+
+// Registra uma ordem (sem alterar a carteira recebida). Devolve { carteira } ou { erro }.
+function registrarOrdem(carteira, o, data, dividendos) {
+  const erro = validarOrdem(carteira.ordens, o, dividendos);
+  if (erro) return { erro };
+  if (carteira.ordens.length >= MAX_ORDENS) return { erro: "Limite de " + MAX_ORDENS + " ordens atingido. Exporte e comece outra carteira." };
+  const nova = o.tipo === "aporte" ? { id: carteira.proximo_id, data, tipo: "aporte", valor: o.valor }
+    : { id: carteira.proximo_id, data, tipo: o.tipo, t: o.t, qtd: o.qtd, preco: o.preco };
+  return { carteira: Object.assign({}, carteira, { ordens: carteira.ordens.concat([nova]), proximo_id: carteira.proximo_id + 1 }) };
+}
+
+function desfazerUltima(carteira) {
+  if (!carteira.ordens.length) return carteira;
+  return Object.assign({}, carteira, { ordens: carteira.ordens.slice(0, -1) });
+}
+
+// Um ponto por dia de preços (o último valor do dia vence). Devolve a mesma lista se nada mudou.
+function registrarSnapshot(historico, d, total, aportado) {
+  if (!RE_DATA.test(d) || !Number.isFinite(total) || !Number.isFinite(aportado)) return historico;
+  const t = Math.round(total * 100) / 100, a = Math.round(aportado * 100) / 100;
+  const ultimo = historico[historico.length - 1];
+  if (ultimo && ultimo.d === d && ultimo.total === t && ultimo.aportado === a) return historico;
+  const base = ultimo && ultimo.d === d ? historico.slice(0, -1) : historico;
+  return base.concat([{ d, total: t, aportado: a }]).slice(-MAX_HISTORICO);
+}
+
+// Quantas unidades de cada ativo do plano a carteira compraria agora com o caixa que tem.
+function comprasPeloPlano(ranking, config, precos, caixa, custoPorAtivo) {
+  const ordem = escolherCandidatos(ranking, config.ativos, config.fiis);
+  const plano = planoDeCompras(precos, ordem, Math.max(caixa, 0), 1, custoPorAtivo);
+  return plano.length ? plano[0].compras : {};
+}
+
+function aporteFeitoNoMes(carteira, dataPrecos) {
+  return carteira.ordens.some((o) => o.tipo === "aporte" && o.data.slice(0, 7) === dataPrecos.slice(0, 7));
+}
+
+function exportarCarteira(carteira, exportadoEm) {
+  return JSON.stringify({ versao: VERSAO_CARTEIRA, exportado_em: exportadoEm, ordens: carteira.ordens, historico: carteira.historico }, null, 2);
+}
+
+// Lê o texto de um arquivo (ou do navegador) e só aceita o que for coerente; reconstrói cada campo, nunca copia o objeto de fora.
+function importarCarteira(texto, dividendos) {
+  let bruto;
+  try { bruto = JSON.parse(texto); } catch (e) { return { erro: "O arquivo não é um JSON válido." }; }
+  if (!bruto || typeof bruto !== "object" || bruto.versao !== VERSAO_CARTEIRA || !Array.isArray(bruto.ordens)) {
+    return { erro: "Este arquivo não é de uma carteira virtual deste painel." };
+  }
+  if (bruto.ordens.length > MAX_ORDENS) return { erro: "O arquivo tem ordens demais (o limite é " + MAX_ORDENS + ")." };
+  const ordens = [];
+  let anterior = "";
+  for (const o of bruto.ordens) {
+    if (!o || typeof o !== "object" || typeof o.data !== "string" || !RE_DATA.test(o.data) || o.data < anterior) return { erro: "Há ordens com data inválida ou fora de ordem." };
+    anterior = o.data;
+    const id = ordens.length + 1;
+    if (o.tipo === "aporte") {
+      if (!Number.isFinite(o.valor) || o.valor <= 0 || o.valor > LIMITE_VALOR) return { erro: "Há um aporte com valor inválido." };
+      ordens.push({ id, data: o.data, tipo: "aporte", valor: o.valor });
+    } else if (o.tipo === "compra" || o.tipo === "venda") {
+      if (typeof o.t !== "string" || !RE_TICKER.test(o.t) || !Number.isInteger(o.qtd) || o.qtd < 1 || o.qtd > 1e7
+        || !Number.isFinite(o.preco) || o.preco <= 0 || o.preco >= 1e7) return { erro: "Há uma compra ou venda com dados inválidos." };
+      ordens.push({ id, data: o.data, tipo: o.tipo, t: o.t, qtd: o.qtd, preco: o.preco });
+    } else {
+      return { erro: "Há uma ordem de tipo desconhecido." };
+    }
+  }
+  const unidades = {};
+  for (const o of ordens) {
+    if (o.tipo === "compra") unidades[o.t] = (unidades[o.t] || 0) + o.qtd;
+    if (o.tipo === "venda") {
+      if ((unidades[o.t] || 0) < o.qtd) return { erro: "O arquivo vende mais " + o.t + " do que a carteira tinha." };
+      unidades[o.t] -= o.qtd;
+    }
+  }
+  if (calcularCarteira(ordens, {}, dividendos || {}).caixa < -0.01) return { erro: "As contas do arquivo não fecham: o caixa ficaria negativo." };
+  const historico = [];
+  for (const h of Array.isArray(bruto.historico) ? bruto.historico.slice(-MAX_HISTORICO) : []) {
+    if (h && typeof h.d === "string" && RE_DATA.test(h.d) && Number.isFinite(h.total) && Number.isFinite(h.aportado)) {
+      historico.push({ d: h.d, total: h.total, aportado: h.aportado });
+    }
+  }
+  return { carteira: { versao: VERSAO_CARTEIRA, ordens, historico, proximo_id: ordens.length + 1 } };
+}
+
+// Duas linhas na mesma escala (para comparar o valor da carteira com o que foi aportado).
+function caminhosComuns(series, largura, altura, margem) {
+  const m = margem === undefined ? 4 : margem;
+  const todos = [].concat(...series).filter((x) => Number.isFinite(x));
+  if (!todos.length) return series.map(() => "");
+  const min = Math.min(...todos), max = Math.max(...todos), faixa = max - min || 1;
+  return series.map((serie) => (serie.length < 2 ? "" : serie.map((y, i) => {
+    const px = m + (largura - 2 * m) * (i / (serie.length - 1));
+    const py = altura - m - (altura - 2 * m) * ((y - min) / faixa);
+    return (i ? "L" : "M") + px.toFixed(1) + " " + py.toFixed(1);
+  }).join("")));
+}
+
 if (typeof module !== "undefined" && module.exports) {
   module.exports = { fmtNum, fmtBRL, fmtPct, fmtData, estadoMercado, horaBrasilia, escolherCandidatos, planoDeCompras,
-    estimativaDividendos, cotasQueCabem, ordenarAtivos, filtrarAtivos, filtrarApostas, maisMenos, caminhoSerie, idadeMin, atrasado, VERSAO_PAGINA };
+    estimativaDividendos, cotasQueCabem, ordenarAtivos, filtrarAtivos, filtrarApostas, maisMenos, caminhoSerie, idadeMin, atrasado, VERSAO_PAGINA,
+    carteiraNova, unidadesAntes, dividendosDaCarteira, calcularCarteira, validarOrdem, registrarOrdem, desfazerUltima, registrarSnapshot,
+    comprasPeloPlano, aporteFeitoNoMes, exportarCarteira, importarCarteira, caminhosComuns };
 }
 
 // ---------- a página ----------
@@ -413,6 +594,273 @@ if (typeof document !== "undefined") {
     t.append(corpo);
   }
 
+  // ----- carteira virtual (a simulação fica só neste navegador) -----
+
+  const CHAVE_CARTEIRA = "carteira:virtual";
+  let carteira = null;
+  let virtual = { montada: null, msg: null, topo: null, baixo: null };
+
+  function mapaPrecos() {
+    const m = {};
+    for (const a of dados.ativos.concat(dados.apostas || [])) m[a.t] = a.preco;
+    return m;
+  }
+  function mapaDividendos() {
+    const m = {};
+    for (const a of dados.ativos.concat(dados.apostas || [])) if (a.div && a.div.length) m[a.t] = a.div;
+    return m;
+  }
+  function lerCarteiraGuardada() {
+    try {
+      const texto = localStorage.getItem(CHAVE_CARTEIRA);
+      return texto ? (importarCarteira(texto, mapaDividendos()).carteira || null) : null;
+    } catch (e) { return null; }
+  }
+  function guardarCarteira() {
+    try {
+      if (carteira) localStorage.setItem(CHAVE_CARTEIRA, JSON.stringify(carteira)); else localStorage.removeItem(CHAVE_CARTEIRA);
+      return true;
+    } catch (e) { return false; }
+  }
+  function mensagem(texto, erro) {
+    if (!virtual.msg) return;
+    virtual.msg.textContent = texto;
+    virtual.msg.className = "msg " + (erro ? "erro" : "ok");
+  }
+  function atualizarSnapshot() {
+    if (!carteira || !carteira.ordens.length) return;
+    const c = calcularCarteira(carteira.ordens, mapaPrecos(), mapaDividendos());
+    const h = registrarSnapshot(carteira.historico, dados.data_precos, c.total, c.aportado);
+    if (h !== carteira.historico) { carteira = Object.assign({}, carteira, { historico: h }); guardarCarteira(); }
+  }
+  function registrar(o) {
+    const r = registrarOrdem(carteira, o, dados.data_precos, mapaDividendos());
+    if (r.erro) { mensagem(r.erro, true); return false; }
+    carteira = r.carteira;
+    atualizarSnapshot();
+    if (!guardarCarteira()) mensagem("Registrado, mas o navegador não deixou guardar: use Exportar para não perder.", true);
+    desenharVirtualNumeros();
+    return true;
+  }
+  const descricaoOrdem = (o) => o.tipo === "aporte" ? "Aporte de " + fmtBRL(o.valor)
+    : (o.tipo === "compra" ? "Compra de " : "Venda de ") + o.qtd + " " + o.t + " a " + fmtBRL(o.preco);
+
+  function campoNumero(rotulo, atributos) {
+    const entrada = el("input", Object.assign({ type: "number", inputmode: "decimal" }, atributos));
+    return { campo: el("label", { class: "campo" }, rotulo, entrada), entrada };
+  }
+
+  function formularioCriar() {
+    const valor = campoNumero("Aporte inicial (R$)", { min: "1", step: "10" });
+    valor.entrada.value = config.valor;
+    const criar = el("button", { type: "button", class: "botao principal" }, "Criar carteira virtual");
+    criar.addEventListener("click", () => {
+      const v = numero(valor.entrada, 1, LIMITE_VALOR, config.valor);
+      const r = registrarOrdem(carteiraNova(), { tipo: "aporte", valor: v }, dados.data_precos, mapaDividendos());
+      carteira = r.carteira;
+      atualizarSnapshot(); guardarCarteira(); desenharVirtual();
+      mensagem("Carteira criada com " + fmtBRL(v) + " de caixa. Agora compre pelo plano ou escolha os ativos.", false);
+    });
+    return el("div", { class: "painel" }, el("h3", null, "Comece uma carteira virtual"),
+      el("p", { class: "nota" }, "Você começa só com caixa. Depois compra ativos pelo preço do painel e acompanha o resultado."),
+      el("div", { class: "linha-form" }, valor.campo, criar, botaoImportar()));
+  }
+
+  function botaoImportar() {
+    const arquivo = el("input", { type: "file", accept: ".json,application/json", hidden: true });
+    arquivo.addEventListener("change", async () => {
+      const f = arquivo.files && arquivo.files[0];
+      arquivo.value = "";
+      if (!f) return;
+      const r = importarCarteira(await f.text(), mapaDividendos());
+      if (r.erro) { mensagem(r.erro, true); return; }
+      if (carteira && !window.confirm("Trocar a carteira virtual atual pela do arquivo? A atual será apagada deste navegador.")) return;
+      carteira = r.carteira; atualizarSnapshot(); guardarCarteira(); desenharVirtual();
+      mensagem("Carteira importada: " + carteira.ordens.length + " ordens.", false);
+    });
+    const botao = el("button", { type: "button", class: "botao" }, "Importar de um arquivo");
+    botao.addEventListener("click", () => arquivo.click());
+    return el("span", null, botao, arquivo);
+  }
+
+  function formularioAcoes() {
+    const precos = mapaPrecos();
+    const tickers = Object.keys(precos).sort();
+    // aportar
+    const ap = campoNumero("Aportar (R$)", { min: "1", step: "10" });
+    ap.entrada.value = config.valor;
+    const bAportar = el("button", { type: "button", class: "botao" }, "Aportar");
+    bAportar.addEventListener("click", () => {
+      const v = numero(ap.entrada, 0, LIMITE_VALOR, 0);
+      if (registrar({ tipo: "aporte", valor: v })) mensagem("Aporte de " + fmtBRL(v) + " registrado.", false);
+    });
+    const dica = el("p", { class: "nota" });
+    // comprar pelo plano
+    const previa = el("div");
+    const bPlano = el("button", { type: "button", class: "botao" }, "Ver compra pelo plano");
+    bPlano.addEventListener("click", () => {
+      limpar(previa);
+      const c = calcularCarteira(carteira.ordens, precos, mapaDividendos());
+      const ranking = dados.ativos.filter((a) => a.ok && a.preco > 0).sort((a, b) => a.pos - b.pos);
+      const custo = {};
+      c.posicoes.forEach((p) => { custo[p.t] = p.custo; });
+      const compras = comprasPeloPlano(ranking, config, precos, c.caixa, custo);
+      const lista = Object.entries(compras);
+      if (!lista.length) {
+        previa.append(el("div", { class: "previa" }, "Com " + fmtBRL(Math.max(c.caixa, 0)) + " em caixa ainda não cabe nenhuma unidade dos ativos do plano. Guarde para o próximo aporte."));
+        return;
+      }
+      const gasto = lista.reduce((acc, [t, n]) => acc + n * precos[t], 0);
+      const confirmar = el("button", { type: "button", class: "botao principal" }, "Confirmar compra");
+      const cancelar = el("button", { type: "button", class: "botao" }, "Cancelar");
+      cancelar.addEventListener("click", () => limpar(previa));
+      confirmar.addEventListener("click", () => {
+        let feito = carteira;
+        for (const [t, n] of lista) {
+          const r = registrarOrdem(feito, { tipo: "compra", t, qtd: n, preco: precos[t] }, dados.data_precos, mapaDividendos());
+          if (r.erro) { mensagem(r.erro, true); return; }
+          feito = r.carteira;
+        }
+        carteira = feito; atualizarSnapshot(); guardarCarteira(); limpar(previa); desenharVirtualNumeros();
+        mensagem("Compra pelo plano registrada: " + lista.map(([t, n]) => n + " " + t).join(" + ") + ".", false);
+      });
+      previa.append(el("div", { class: "previa" }, el("div", null, "Vai comprar: ", el("b", null, lista.map(([t, n]) => n + " " + t).join(" + "))),
+        el("div", { class: "nota" }, "Gasto " + fmtBRL(gasto) + "; sobram " + fmtBRL(c.caixa - gasto) + ". O plano reforça o ativo com menos dinheiro aplicado, contando o que você já tem."),
+        el("div", { class: "linha-form" }, confirmar, cancelar)));
+    });
+    // ordem manual
+    const tipo = el("select", null, el("option", { value: "compra" }, "Comprar"), el("option", { value: "venda" }, "Vender"));
+    const ativo = el("input", { type: "text", list: "virtual-ativos", placeholder: "ex.: PETR4", autocomplete: "off", maxlength: "8" });
+    const lista = el("datalist", { id: "virtual-ativos" }, tickers.map((t) => el("option", { value: t }, fmtBRL(precos[t]))));
+    const qtd = campoNumero("Quantidade", { min: "1", step: "1", inputmode: "numeric" });
+    const preco = campoNumero("Preço (R$)", { min: "0.01", step: "0.01" });
+    const estimativa = el("p", { class: "nota" });
+    let precoAuto = true;
+    const atualizar = () => {
+      const t = ativo.value.trim().toUpperCase();
+      if (precoAuto && precos[t] !== undefined) preco.entrada.value = precos[t];
+      const q = Number(qtd.entrada.value), pr = Number(preco.entrada.value);
+      estimativa.textContent = t && Number.isFinite(q) && Number.isFinite(pr) && q > 0 && pr > 0 ? "Total: " + fmtBRL(q * pr) : "";
+    };
+    ativo.addEventListener("input", () => { precoAuto = true; atualizar(); });
+    preco.entrada.addEventListener("input", () => { precoAuto = false; atualizar(); });
+    qtd.entrada.addEventListener("input", atualizar);
+    const bRegistrar = el("button", { type: "button", class: "botao principal" }, "Registrar");
+    bRegistrar.addEventListener("click", () => {
+      const o = { tipo: tipo.value, t: ativo.value.trim().toUpperCase(), qtd: Number(qtd.entrada.value), preco: Number(preco.entrada.value) };
+      if (registrar(o)) { mensagem(descricaoOrdem(o) + " registrada.", false); qtd.entrada.value = ""; estimativa.textContent = ""; }
+    });
+    // manutenção
+    const bDesfazer = el("button", { type: "button", class: "botao" }, "Desfazer a última ordem");
+    bDesfazer.addEventListener("click", () => {
+      if (!carteira.ordens.length) { mensagem("Não há ordem para desfazer.", true); return; }
+      const ultima = carteira.ordens[carteira.ordens.length - 1];
+      carteira = desfazerUltima(carteira); guardarCarteira(); desenharVirtualNumeros();
+      mensagem("Desfeito: " + descricaoOrdem(ultima) + ".", false);
+    });
+    const bExportar = el("button", { type: "button", class: "botao" }, "Exportar (guardar uma cópia)");
+    bExportar.addEventListener("click", () => {
+      const blob = new Blob([exportarCarteira(carteira, new Date().toISOString())], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = el("a", { href: url, download: "carteira-virtual-" + dados.data_precos + ".json" });
+      document.body.append(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      mensagem("Arquivo gerado. Guarde-o: é a única cópia fora deste navegador.", false);
+    });
+    const bApagar = el("button", { type: "button", class: "botao perigo" }, "Apagar a carteira");
+    bApagar.addEventListener("click", () => {
+      if (!window.confirm("Apagar a carteira virtual deste navegador? Isso não pode ser desfeito (use Exportar antes, se quiser guardar).")) return;
+      carteira = null; guardarCarteira(); desenharVirtual();
+      mensagem("Carteira apagada.", false);
+    });
+    virtual.dica = dica;
+    return el("div", null,
+      el("div", { class: "virtual-acoes" },
+        el("div", { class: "painel" }, el("h3", null, "Aporte"), el("div", { class: "linha-form" }, ap.campo, bAportar), dica),
+        el("div", { class: "painel" }, el("h3", null, "Compra pelo plano"),
+          el("p", { class: "nota" }, "Usa o caixa da carteira e os ativos do plano (" + config.ativos + " ativos, " + config.fiis + " FIIs; mude lá em cima)."), bPlano, previa),
+        el("div", { class: "painel" }, el("h3", null, "Ordem manual"),
+          el("div", { class: "linha-form" }, el("label", { class: "campo" }, "Tipo", tipo), el("label", { class: "campo" }, "Ativo", ativo, lista), qtd.campo, preco.campo, bRegistrar), estimativa)),
+      el("div", { class: "manutencao" }, bDesfazer, bExportar, botaoImportar(), bApagar));
+  }
+
+  function graficoVirtual(historico) {
+    if (historico.length < 2) return el("p", { class: "nota" }, "O gráfico aparece quando a carteira tiver pelo menos dois dias de preços.");
+    const W = 600, H = 170;
+    const [cTotal, cAportado] = caminhosComuns([historico.map((h) => h.total), historico.map((h) => h.aportado)], W, H, 6);
+    const todos = historico.map((h) => h.total).concat(historico.map((h) => h.aportado));
+    const svg = document.createElementNS(NS_SVG, "svg");
+    svg.setAttribute("viewBox", "0 0 " + W + " " + H);
+    svg.setAttribute("class", "grafico");
+    svg.setAttribute("role", "img");
+    const ultimo = historico[historico.length - 1];
+    svg.setAttribute("aria-label", "Valor da carteira virtual: de " + fmtBRL(historico[0].total) + " em " + fmtData(historico[0].d) + " para " + fmtBRL(ultimo.total) + " em " + fmtData(ultimo.d) + "; total aportado " + fmtBRL(ultimo.aportado));
+    const caminho = (d, classe) => { const p = document.createElementNS(NS_SVG, "path"); p.setAttribute("d", d); p.setAttribute("class", classe); return p; };
+    svg.append(caminho(cAportado, "aportado"), caminho(cTotal, "total"));
+    return el("div", null,
+      el("p", { class: "nota" }, "De " + fmtData(historico[0].d) + " a " + fmtData(ultimo.d) + ": mínimo " + fmtBRL(Math.min(...todos)) + ", máximo " + fmtBRL(Math.max(...todos)) + "."),
+      svg,
+      el("p", { class: "nota" }, el("span", { class: "chip-linha" }), "valor total da carteira   ", el("span", { class: "chip-linha tracejada" }), "total aportado"));
+  }
+
+  function desenharVirtualNumeros() {
+    if (!carteira || !virtual.topo) return;
+    const c = calcularCarteira(carteira.ordens, mapaPrecos(), mapaDividendos());
+    limpar(virtual.topo).append(el("div", { class: "cartoes" },
+      cartao("Valor total", fmtBRL(c.total), el("small", null, "caixa + ativos")),
+      cartao("Total aportado", fmtBRL(c.aportado), null),
+      cartao("Resultado", fmtBRL(c.resultado), c.resultado_pct === null ? null : variacao(c.resultado_pct)),
+      cartao("Caixa", fmtBRL(c.caixa), el("small", null, c.caixa > 0.005 ? "ainda não aplicado" : "sem caixa")),
+      cartao("Dividendos recebidos", fmtBRL(c.dividendos), el("small", null, "simulados, já no caixa"))));
+    if (virtual.dica) {
+      virtual.dica.textContent = aporteFeitoNoMes(carteira, dados.data_precos) ? "Você já fez o aporte deste mês." : "Você ainda não fez o aporte deste mês.";
+    }
+    const baixo = limpar(virtual.baixo);
+    if (!c.posicoes.length) {
+      baixo.append(el("p", { class: "nota" }, "Ainda não há ativos na carteira. Use \"Compra pelo plano\" ou \"Ordem manual\"."));
+    } else {
+      baixo.append(el("h3", null, "Seus ativos"), el("div", { class: "painel rolagem" }, el("table", { class: "tabela empilha", id: "tabela-posicoes" },
+        el("thead", null, el("tr", null, el("th", null, "Ativo"), el("th", { class: "n" }, "Quantidade"), el("th", { class: "n" }, "Preço médio"),
+          el("th", { class: "n" }, "Preço agora"), el("th", { class: "n" }, "Valor"), el("th", { class: "n" }, "Resultado"))),
+        el("tbody", null, c.posicoes.map((p) => el("tr", null,
+          el("td", { class: "col-ativo" }, p.t),
+          el("td", { class: "n", "data-label": "Quantidade" }, String(p.qtd)),
+          el("td", { class: "n", "data-label": "Preço médio" }, fmtBRL(p.preco_medio)),
+          el("td", { class: "n", "data-label": "Preço agora" }, p.sem_preco ? "sem preço" : fmtBRL(p.preco_atual)),
+          el("td", { class: "n", "data-label": "Valor" }, fmtBRL(p.valor)),
+          el("td", { class: "n largo", "data-label": "Resultado" }, el("div", null, fmtBRL(p.resultado), " ", variacao(p.resultado_pct)))))))));
+    }
+    baixo.append(el("h3", { style: "margin-top:18px" }, "Evolução"), graficoVirtual(carteira.historico));
+    const mov = carteira.ordens.map((o) => ({ data: o.data, texto: descricaoOrdem(o), valor: o.tipo === "aporte" ? o.valor : o.tipo === "compra" ? -o.qtd * o.preco : o.qtd * o.preco }))
+      .concat(c.dividendosItens.map((d) => ({ data: d.data, texto: "Dividendos de " + d.t + ": " + d.qtd + " x " + fmtBRL(d.por_unidade), valor: d.valor })));
+    mov.sort((a, b) => (a.data < b.data ? 1 : a.data > b.data ? -1 : 0));
+    baixo.append(el("h3", { style: "margin-top:18px" }, "Movimentações (as mais recentes primeiro)"), el("div", { class: "painel rolagem" }, el("table", { class: "tabela empilha", id: "tabela-movimentos" },
+      el("thead", null, el("tr", null, el("th", null, "Data"), el("th", null, "O que aconteceu"), el("th", { class: "n" }, "Caixa"))),
+      el("tbody", null, mov.slice(0, 30).map((m) => el("tr", null, el("td", { class: "col-ativo" }, fmtData(m.data)),
+        el("td", { class: "largo", "data-label": "O que aconteceu" }, m.texto),
+        el("td", { class: "n", "data-label": "Caixa" }, (m.valor >= 0 ? "+" : "-") + fmtBRL(Math.abs(m.valor)))))))));
+  }
+
+  function desenharVirtual() {
+    const raiz = limpar($("virtual-saida"));
+    raiz.append(el("div", { class: "aviso-risco", role: "note" }, el("b", null, "Simulação com dinheiro de mentira. "),
+      "Ela fica só neste navegador (nada vai para o servidor) e some se você limpar os dados do navegador: use Exportar para guardar uma cópia. ",
+      "Os preços são os do painel (com atraso de alguns minutos); não há corretagem, taxas da B3 nem imposto, e toda ordem sai pelo preço mostrado, o que na vida real nem sempre acontece. ",
+      "Dividendos entram no caixa na data ex (quando o ativo passa a negociar sem direito ao pagamento), para quem tinha o ativo no dia anterior. Não é recomendação."));
+    virtual.msg = el("p", { class: "msg", role: "status", "aria-live": "polite" });
+    virtual.topo = null; virtual.baixo = null; virtual.dica = null;
+    virtual.montada = !!carteira;
+    if (!carteira) { raiz.append(virtual.msg, formularioCriar()); return; }
+    virtual.topo = el("div"); virtual.baixo = el("div");
+    raiz.append(virtual.msg, virtual.topo, formularioAcoes(), virtual.baixo);
+    desenharVirtualNumeros();
+  }
+
+  // Redesenha só os números quando a seção já está montada (assim não apaga o que a pessoa está digitando).
+  function desenharVirtualSeguro() {
+    if (virtual.montada === !!carteira && (virtual.montada ? virtual.topo : true)) desenharVirtualNumeros(); else desenharVirtual();
+  }
+
   // ----- passado, corretoras, rodapé -----
 
   function desenharPassado() {
@@ -452,7 +900,7 @@ if (typeof document !== "undefined") {
   }
 
   function desenharTudo() {
-    desenharTopo(); desenharMercado(); desenharRanking(); desenharMovimento(); desenharPlano(); desenharApostas(); desenharPassado(); desenharCorretoras(); desenharRodape();
+    desenharTopo(); desenharMercado(); desenharRanking(); desenharMovimento(); desenharPlano(); desenharApostas(); atualizarSnapshot(); desenharVirtualSeguro(); desenharPassado(); desenharCorretoras(); desenharRodape();
   }
 
   // ----- atualização automática -----
@@ -487,6 +935,7 @@ if (typeof document !== "undefined") {
       desenharMercado();
       desenharRanking();
       desenharApostas();
+      desenharVirtualNumeros();
       buscar(false);
     }, 60000);
   }
@@ -540,7 +989,7 @@ if (typeof document !== "undefined") {
     $("config").addEventListener("submit", (e) => e.preventDefault());
     $("cfg-padrao").addEventListener("click", () => { config = Object.assign({}, dados.config); escreverConfig(); salvar(); desenharRanking(); desenharPlano(); desenharApostas(); });
     $("btn-atualizar").addEventListener("click", () => buscar(true));
-    document.addEventListener("visibilitychange", () => { if (!document.hidden) { desenharTopo(); desenharMercado(); desenharRanking(); desenharApostas(); buscar(false); } });
+    document.addEventListener("visibilitychange", () => { if (!document.hidden) { desenharTopo(); desenharMercado(); desenharRanking(); desenharApostas(); desenharVirtualNumeros(); buscar(false); } });
   }
 
   function salvar() {
@@ -577,6 +1026,8 @@ if (typeof document !== "undefined") {
       return;
     }
     carregarPreferencias();
+    carteira = lerCarteiraGuardada();
+    window.addEventListener("storage", (e) => { if (e.key === CHAVE_CARTEIRA) { carteira = lerCarteiraGuardada(); desenharVirtual(); } });
     ligarEventos();
     desenharTudo();
     agendar();
